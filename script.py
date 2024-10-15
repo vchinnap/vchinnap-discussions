@@ -2,14 +2,15 @@ import requests
 import json
 import os
 
-GITHUB_TOKEN = os.getenv("G_TOKEN")
-REPO_OWNER = "vchinnap"  # Change this to your GitHub username
-REPO_NAME = "town-square"  # Change this to your repository name
+# Set your GitHub username and repository name here
+REPO_OWNER = "vchinnap"  # Replace with your GitHub username
+REPO_NAME = "town-square"  # Replace with your repository name
 
 # GitHub GraphQL endpoint
 GITHUB_API_URL = "https://api.github.com/graphql"
+GITHUB_TOKEN = os.getenv("G_TOKEN")  # Use the G_TOKEN secret from GitHub Actions
 
-# GraphQL mutation to create a discussion category
+# Function to create discussion category using GraphQL mutation
 def create_discussion_category(category_name, category_description):
     query = """
     mutation($repositoryId: ID!, $name: String!, $description: String!) {
@@ -25,7 +26,7 @@ def create_discussion_category(category_name, category_description):
       }
     }
     """
-    
+
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
     # Get repository ID
@@ -45,10 +46,14 @@ def create_discussion_category(category_name, category_description):
 
     if response.status_code == 200:
         data = response.json()
-        print(f"Category '{category_name}' created successfully.")
+        if 'errors' in data:
+            print(f"Error creating category '{category_name}': {data['errors']}")
+        else:
+            print(f"Category '{category_name}' created successfully.")
     else:
         raise Exception(f"Failed to create category: {response.content}")
 
+# Function to get the repository ID using a GraphQL query
 def get_repository_id():
     query = """
     query($owner: String!, $name: String!) {
@@ -57,7 +62,7 @@ def get_repository_id():
       }
     }
     """
-    
+
     variables = {"owner": REPO_OWNER, "name": REPO_NAME}
 
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
@@ -68,25 +73,24 @@ def get_repository_id():
         headers=headers
     )
 
-    # Add debug statements
     print("Response status code:", response.status_code)
     print("Response content:", response.content)
 
     if response.status_code == 200:
         data = response.json()
-        if 'data' in data and 'repository' in data['data']:
+        if 'data' in data and data['data']['repository']:
             return data['data']['repository']['id']
         else:
-            raise Exception(f"Repository not found in the response: {data}")
+            raise Exception(f"Repository not found: {data}")
     else:
         raise Exception(f"Failed to fetch repository ID: {response.content}")
 
-
 if __name__ == "__main__":
+    # List of categories to create
     categories = [
         {"name": "General", "description": "General discussions"},
-        {"name": "Q&A", "description": "Question and answer category"},
-        {"name": "Announcements", "description": "Official announcements"},
+        {"name": "Q&A", "description": "Questions and answers"},
+        {"name": "Announcements", "description": "Official announcements"}
     ]
 
     for category in categories:
