@@ -3,8 +3,8 @@ import json
 import os
 
 GITHUB_TOKEN = os.getenv("G_TOKEN")
-REPO_OWNER = "your-username"  # Change this to your GitHub username
-REPO_NAME = "your-repository"  # Change this to your repository name
+REPO_OWNER = "vchinnap"  # Change this to your GitHub username
+REPO_NAME = "town-square"  # Change this to your repository name
 
 # GitHub GraphQL endpoint
 GITHUB_API_URL = "https://api.github.com/graphql"
