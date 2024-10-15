@@ -1,39 +1,32 @@
-name: Create GitHub Labels
+name: Label Nugget Discussions
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+  discussion:
+    types: [created, edited]
 
 jobs:
-  create_labels:
+  label_nugget:
     runs-on: ubuntu-latest
-
-    permissions:
-      issues: write  # Ensure permissions to write issues (labels)
-
     steps:
-      - name: Create labels
-        env:
-          GITHUB_TOKEN: ${{ secrets.G_TOKEN }}  # Using GitHub Actions built-in token
-        run: |
-          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/vchinnap/town-square/labels \
-            -d '{"name": "Bug", "color": "d73a4a", "description": "An issue with the system or feature."}'
+    - name: Check for 'Nugget' keyword and add label
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const discussion = context.payload.discussion;
+          const nuggetLabel = 'Nugget';  # or 'Knowledge Nugget'
+          
+          // Check if the title or body contains the word "Nugget"
+          if (discussion.title.includes('Nugget') || discussion.body.includes('Nugget')) {
+            const labels = discussion.labels.map(label => label.name);
 
-          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/vchinnap/town-square/labels \
-            -d '{"name": "Feature Request", "color": "a2eeef", "description": "A new feature or improvement suggestion."}'
-
-          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/vchinnap/town-square/labels \
-            -d '{"name": "Nugget", "color": "7f8c8d", "description": "A small piece of knowledge or learning."}'
-
-          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/vchinnap/town-square/labels \
-            -d '{"name": "Documentation", "color": "0366d6", "description": "Improvements or additions to documentation."}'
+            // Add label if it's not already present
+            if (!labels.includes(nuggetLabel)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: discussion.number,
+                labels: [nuggetLabel],
+              });
+              console.log(`Label '${nuggetLabel}' added to discussion #${discussion.number}`);
+            }
+          }
