@@ -1,45 +1,33 @@
-name: Label Nugget Discussions
+with:
+  script: |
+    const discussion = context.payload.discussion;
+    const nuggetLabel = 'Nugget';  // You can change to 'Knowledge Nugget' if needed
 
-on:
-  discussion:
-    types: [created, edited]
+    // Detailed logging for debugging
+    console.log(`Discussion title: ${discussion.title}`);
+    console.log(`Discussion body: ${discussion.body}`);
+    console.log(`Current labels: ${discussion.labels.map(label => label.name).join(', ')}`);
 
-jobs:
-  label_nugget:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Check for 'Nugget' keyword and add label
-      uses: actions/github-script@v6
-      with:
-        script: |
-          const discussion = context.payload.discussion;
-          const nuggetLabel = 'Nugget';  // You can change to 'Knowledge Nugget' if needed
+    // Convert title and body to lowercase and check for 'nugget' (case-insensitive)
+    if (discussion.title.toLowerCase().includes('nugget') || discussion.body.toLowerCase().includes('nugget')) {
+      console.log(`Found "Nugget" in the title or body.`);
 
-          // Detailed logging for debugging
-          console.log(`Discussion title: ${discussion.title}`);
-          console.log(`Discussion body: ${discussion.body}`);
-          console.log(`Current labels: ${discussion.labels.map(label => label.name).join(', ')}`);
+      const labels = discussion.labels.map(label => label.name);
 
-          // Check if the title or body contains the word "Nugget"
-          if (discussion.title.includes('Nugget') || discussion.body.includes('Nugget')) {
-            console.log(`Found "Nugget" in the title or body.`);
-
-            const labels = discussion.labels.map(label => label.name);
-            
-            // Add label if it's not already present
-            if (!labels.includes(nuggetLabel)) {
-              console.log(`Adding label '${nuggetLabel}' to discussion #${discussion.number}`);
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: discussion.number,
-                labels: [nuggetLabel],
-              });
-              console.log(`Label '${nuggetLabel}' added successfully.`);
-            } else {
-              console.log(`Label '${nuggetLabel}' already exists on the discussion.`);
-            }
-          } else {
-            console.log(`"Nugget" not found in the title or body.`);
-          }
-        github-token: ${{ secrets.G_TOKEN }}  # Replace with your GitHub token secret
+      // Add label if it's not already present
+      if (!labels.includes(nuggetLabel)) {
+        console.log(`Adding label '${nuggetLabel}' to discussion #${discussion.number}`);
+        await github.rest.issues.addLabels({
+          owner: context.repo.owner,
+          repo: context.repo.repo,
+          issue_number: discussion.number,
+          labels: [nuggetLabel],
+        });
+        console.log(`Label '${nuggetLabel}' added successfully.`);
+      } else {
+        console.log(`Label '${nuggetLabel}' already exists on the discussion.`);
+      }
+    } else {
+      console.log(`"Nugget" not found in the title or body.`);
+    }
+  github-token: ${{ secrets.G_TOKEN }}
