@@ -1,63 +1,24 @@
 name: Create Discussion Categories
 
-permissions:
-  discussions: write  # Allow the workflow to manage discussions
-  contents: write     # Required to perform write operations
-
 on:
-  workflow_dispatch:  # Manually trigger the workflow
+  workflow_dispatch:  # Manual trigger
 
 jobs:
-  create_discussion_category:
+  create-categories:
     runs-on: ubuntu-latest
     steps:
-    - name: Create discussion categories
-      uses: actions/github-script@v6
-      with:
-        script: |
-          const categories = [
-            { name: 'Channels', description: 'Discussions about communication channels.' },
-            { name: 'Fusion Friday', description: 'Ideas and talks shared on Fridays.' },
-            { name: 'Ideas', description: 'Brainstorming and innovative ideas.' },
-            { name: 'Q&A', description: 'Ask questions and get answers.' },
-            { name: 'Teams', description: 'Team collaboration topics.' },
-            { name: 'Tickets', description: 'General tickets and issue tracking.' },
-            { name: 'JIRA', description: 'Discussions related to JIRA tickets.' },
-            { name: 'ServiceNow', description: 'ServiceNow related discussions and issues.' }
-          ];
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-          const repositoryId = context.payload.repository.node_id;  // Gets the repository ID
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
 
-          for (const category of categories) {
-            try {
-              const mutation = `
-                mutation($repositoryId: ID!, $categoryName: String!, $description: String!) {
-                  createDiscussionCategory(input: {
-                    repositoryId: $repositoryId,
-                    name: $categoryName,
-                    description: $description
-                  }) {
-                    discussionCategory {
-                      id
-                      name
-                    }
-                  }
-                }
-              `;
-              const variables = {
-                repositoryId: repositoryId,
-                categoryName: category.name,
-                description: category.description
-              };
+      - name: Install dependencies
+        run: pip install requests
 
-              const result = await github.graphql(mutation, variables);
-              console.log(`Category '${result.createDiscussionCategory.discussionCategory.name}' created successfully.`);
-            } catch (error) {
-              if (error.status === 422) {
-                console.log(`Category '${category.name}' already exists.`);
-              } else {
-                throw error;
-              }
-            }
-          }
-        github-token: ${{ secrets.G_TOKEN }}  # Use your GitHub token secret
+      - name: Run script to create discussion categories
+        env:
+          G_TOKEN: ${{ secrets.G_TOKEN }}  # GitHub token as an environment variable
+        run: python script.py  # Assuming the Python script is saved as 'script.py'
