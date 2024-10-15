@@ -1,4 +1,4 @@
-name: Create Labels in Repository
+name: Create Labels in Repositor
 
 on:
   push:
