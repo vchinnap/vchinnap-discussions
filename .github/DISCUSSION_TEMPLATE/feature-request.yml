@@ -1,0 +1,53 @@
+title: "[Feature Request] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest a new feature! Please fill out this form as completely as possible.
+
+  - type: input
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve?
+      placeholder: "As a user, I struggle with..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe your proposed feature in detail.
+      placeholder: "A new feature that could solve this problem is..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: What alternatives have you considered?
+      placeholder: "Other approaches I've thought about include..."
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Potential Impact
+      description: How impactful do you think this feature would be?
+      options:
+        - High impact
+        - Medium impact
+        - Low impact
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this feature request, you agree to follow our Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
