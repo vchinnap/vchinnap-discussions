@@ -49,7 +49,6 @@ def create_discussion_category(category_name, category_description):
     else:
         raise Exception(f"Failed to create category: {response.content}")
 
-# Function to get the repository ID
 def get_repository_id():
     query = """
     query($owner: String!, $name: String!) {
@@ -69,11 +68,19 @@ def get_repository_id():
         headers=headers
     )
 
+    # Add debug statements
+    print("Response status code:", response.status_code)
+    print("Response content:", response.content)
+
     if response.status_code == 200:
         data = response.json()
-        return data['data']['repository']['id']
+        if 'data' in data and 'repository' in data['data']:
+            return data['data']['repository']['id']
+        else:
+            raise Exception(f"Repository not found in the response: {data}")
     else:
         raise Exception(f"Failed to fetch repository ID: {response.content}")
+
 
 if __name__ == "__main__":
     categories = [
