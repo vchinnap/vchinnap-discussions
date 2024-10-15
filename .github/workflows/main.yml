@@ -2,7 +2,7 @@ name: Label Nugget Discussions
 
 on:
   discussion:
-    types: [created, edited]
+    types: [createds, editeds]
 
 jobs:
   label_nugget:
