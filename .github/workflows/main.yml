@@ -3,17 +3,20 @@ name: Create GitHub Labels
 on:
   push:
     branches:
-      - main  # Trigger when you push to the main branch
-  workflow_dispatch:  # Allows manual trigger from the GitHub Actions tab
+      - main
+  workflow_dispatch:
 
 jobs:
   create_labels:
     runs-on: ubuntu-latest
 
+    permissions:
+      issues: write  # Ensure permissions to write issues (labels)
+
     steps:
       - name: Create labels
         env:
-          GITHUB_TOKEN: ${{ secrets.G_TOKEN }}  # Ensure you add your token as G_TOKEN in repository secrets
+          GITHUB_TOKEN: ${{ secrets.G_TOKEN }}  # Using GitHub Actions built-in token
         run: |
           curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
