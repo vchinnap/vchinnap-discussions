@@ -1,36 +1,43 @@
-name: Label Nugget Discussions
+name: Create Labels in Repository
 
 on:
-  discussion:
-    types: [created, edited]
+  push:
+    branches:
+      - main
 
 jobs:
-  label_nugget:
+  create_labels:
     runs-on: ubuntu-latest
     steps:
-    - name: Check for existing labels and add 'Nugget' label
+    - name: Create labels in the repository
       uses: actions/github-script@v6
       with:
         script: |
-          const discussion = context.payload.discussion;
-          const nuggetLabel = 'Nugget';  // You can change to 'Knowledge Nugget' if needed
+          const labelsToCreate = [
+            { name: 'Nugget', color: 'ff5733', description: 'Knowledge Nuggets' },
+            { name: 'Bug', color: 'f29513', description: 'Something is not working' },
+            { name: 'Enhancement', color: 'a2eeef', description: 'New feature or request' },
+            { name: 'Documentation', color: '0075ca', description: 'Improvements or additions to documentation' }
+          ];
 
-          // Log the current discussion labels for debugging
-          console.log(`Current labels: ${discussion.labels.map(label => label.name).join(', ')}`);
-
-          const labels = discussion.labels.map(label => label.name);
-          
-          // Add 'Nugget' label if it's not already present
-          if (!labels.includes(nuggetLabel)) {
-            console.log(`Label '${nuggetLabel}' not found, adding now.`);
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: discussion.number,
-              labels: [nuggetLabel],
-            });
-            console.log(`Label '${nuggetLabel}' added successfully.`);
-          } else {
-            console.log(`Label '${nuggetLabel}' already exists on this discussion.`);
+          for (const label of labelsToCreate) {
+            try {
+              // Try to create the label
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label.name,
+                color: label.color,
+                description: label.description
+              });
+              console.log(`Label '${label.name}' created successfully.`);
+            } catch (error) {
+              // If the label already exists, log a message
+              if (error.status === 422) {
+                console.log(`Label '${label.name}' already exists.`);
+              } else {
+                throw error;
+              }
+            }
           }
         github-token: ${{ secrets.G_TOKEN }}  # Replace with your GitHub token secret
