@@ -13,12 +13,12 @@ jobs:
       with:
         script: |
           const discussion = context.payload.discussion;
-          const nuggetLabel = 'Nugget';  # or 'Knowledge Nugget'
-          
+          const nuggetLabel = 'Nugget';  // You can change to 'Knowledge Nugget' if needed
+
           // Check if the title or body contains the word "Nugget"
           if (discussion.title.includes('Nugget') || discussion.body.includes('Nugget')) {
             const labels = discussion.labels.map(label => label.name);
-
+            
             // Add label if it's not already present
             if (!labels.includes(nuggetLabel)) {
               await github.rest.issues.addLabels({
@@ -30,3 +30,4 @@ jobs:
               console.log(`Label '${nuggetLabel}' added to discussion #${discussion.number}`);
             }
           }
+        github-token: ${{ secrets.G_TOKEN }}  # Replace with the secret for your GitHub token
