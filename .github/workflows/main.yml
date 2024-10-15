@@ -1,0 +1,36 @@
+name: Create GitHub Labels
+
+on:
+  push:
+    branches:
+      - main  # Trigger on push to the main branch
+  workflow_dispatch:  # Allows manual trigger from the GitHub Actions tab
+
+jobs:
+  create_labels:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.G_TOKEN }}  # Replace with your GitHub token
+        run: |
+          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/labels \
+            -d '{"name": "Bug", "color": "d73a4a", "description": "An issue with the system or feature."}'
+
+          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/labels \
+            -d '{"name": "Feature Request", "color": "a2eeef", "description": "A new feature or improvement suggestion."}'
+
+          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/labels \
+            -d '{"name": "Nugget", "color": "7f8c8d", "description": "A small piece of knowledge or learning."}'
+
+          curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/labels \
+            -d '{"name": "Documentation", "color": "0366d6", "description": "Improvements or additions to documentation."}'
