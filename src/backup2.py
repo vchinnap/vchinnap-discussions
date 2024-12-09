@@ -5,7 +5,7 @@ import logging
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
 
-def log_backup_job_status_to_cloudwatch():
+def script_handler(event, context):
     # Initialize AWS clients
     backup_client = boto3.client('backup')
     cloudwatch_logs = boto3.client('logs')
@@ -49,6 +49,3 @@ def log_backup_job_status_to_cloudwatch():
 
     except Exception as e:
         logging.error(f"An error occurred while logging backup jobs: {e}")
-
-if __name__ == "__main__":
-    log_backup_job_status_to_cloudwatch()
