@@ -2,12 +2,17 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-def send_email():
-    # SMTP configuration
-    relay_server = 'smtp-dummy:25'  # Replace with your SMTP server
-    sender_email = 'vinod.sms@dumm.com'  # Replace with your sender email
-    receiver_email = 'vinod.dmd@dummy.com'  # Replace with the recipient email
-    cc_email = 'vinod.dmd@dummy.com'  # Replace with CC email if needed
+def script_handler(event, context):
+    """
+    The entry point for the SSM document execution.
+    :param event: Dictionary containing input parameters from the SSM document.
+    :param context: Contextual information provided by AWS Lambda/SSM.
+    """
+    # Retrieve parameters from the event
+    relay_server = event.get('SMTPRelayServer', 'smtp-dummy:25')  # Replace with your SMTP server
+    sender_email = event.get('SenderEmail', 'vinod.sms@dummy.com')  # Replace with sender email
+    receiver_email = event.get('ReceiverEmail', 'vinod.dmd@dummy.com')  # Replace with recipient email
+    cc_email = event.get('CCEmail', 'vinod.dmd@dummy.com')  # Replace with CC email if needed
 
     # Email subject and body
     SUBJECT = "Test Email Notification from SMTP"
@@ -34,11 +39,6 @@ def send_email():
                 [receiver_email, cc_email],
                 email_message.as_string()
             )
-        print("Email sent successfully")
+        return {"status": "Email sent successfully"}
     except Exception as error:
-        print("Error sending email")
-        print(error)
-
-# Run the function for testing
-if __name__ == "__main__":
-    send_email()
+        return {"status": "Error sending email", "error": str(error)}
