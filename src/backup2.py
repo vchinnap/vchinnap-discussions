@@ -47,16 +47,16 @@ def script_handler(event, context):
         for job in response.get("BackupJobs", []):
             # Extract job details
             resource_name = job.get("ResourceName", "N/A")
+            resource_id = job.get("ResourceArn", "N/A").split(":")[-1]  # Extract the Resource ID from ARN
             status = job.get("State", "N/A")
             job_id = job.get("BackupJobId", "N/A")
             resource_type = job.get("ResourceType", "N/A")
             message = job.get("StatusMessage", "N/A")
 
-            # Create a log message
+            # Add resource_name and resource_id in log message
             log_message = (
-                f"Resource: {resource_name}, Status: {status}, "
-                f"Job ID: {job_id}, Resource Type: {resource_type}, "
-                f"Message: {message}"
+                f"Resource Name: {resource_name}, Resource ID: {resource_id}, Status: {status}, "
+                f"Job ID: {job_id}, Resource Type: {resource_type}, Message: {message}"
             )
 
             logging.info(f"Logging job status: {log_message}")
