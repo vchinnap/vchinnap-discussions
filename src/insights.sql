@@ -16,34 +16,36 @@ fields @timestamp, @message
 
 
 
-Here are the **CloudWatch Logs Insights queries** tailored for each widget type:
+
+You're absolutely right! Let me refine and enhance these queries to ensure accuracy and meaningful insights for each widget.
 
 ---
 
 ### **1. Logs Table Widget**
-**Purpose**: Display detailed information about backup jobs (FAILED, ABORTED, EXPIRED).
+**Purpose**: Display detailed information about all backup jobs (FAILED, ABORTED, EXPIRED).
 
 #### Query:
 ```sql
 fields @timestamp, @message
 | parse @message /Status: (?<status>[^,]+), Job ID: (?<job_id>[^,]+), Resource Type: (?<resource_type>[^,]+), Message: (?<error_message>.+)/
 | filter status in ["FAILED", "ABORTED", "EXPIRED"]
-| display @timestamp, job_id, status, resource_type, error_message
 | sort @timestamp desc
 | limit 100
+| display @timestamp, job_id, status, resource_type, error_message
 ```
 
 ---
 
 ### **2. Pie Chart Widget**
-**Purpose**: Visualize the percentage distribution of job statuses (FAILED, ABORTED, EXPIRED).
+**Purpose**: Show the percentage distribution of job statuses (FAILED, ABORTED, EXPIRED).
 
 #### Query:
 ```sql
-fields @timestamp, @message
+fields @message
 | parse @message /Status: (?<status>[^,]+)/
 | filter status in ["FAILED", "ABORTED", "EXPIRED"]
 | stats count(*) as job_count by status
+| display status, job_count
 ```
 
 ---
@@ -57,7 +59,7 @@ fields @timestamp, @message
 | parse @message /Status: (?<status>[^,]+)/
 | filter status in ["FAILED", "ABORTED", "EXPIRED"]
 | stats count(*) as job_count by bin(1h), status
-| sort bin(1h)
+| display bin(1h) as time_period, status, job_count
 ```
 
 ---
@@ -67,34 +69,56 @@ fields @timestamp, @message
 
 #### Query:
 ```sql
-fields @timestamp, @message
+fields @message
 | parse @message /Status: (?<status>[^,]+), Resource Type: (?<resource_type>[^,]+)/
 | filter status in ["FAILED", "ABORTED", "EXPIRED"]
 | stats count(*) as job_count by resource_type, status
-| sort job_count desc
+| display resource_type, status, job_count
 ```
 
 ---
 
 ### **5. Stacked Area Chart Widget**
-**Purpose**: Track cumulative trends of all job statuses (FAILED, ABORTED, EXPIRED) over time.
+**Purpose**: Visualize cumulative trends for all job statuses over time.
 
 #### Query:
 ```sql
 fields @timestamp, @message
 | parse @message /Status: (?<status>[^,]+)/
 | filter status in ["FAILED", "ABORTED", "EXPIRED"]
-| stats count(*) as job_count by bin(1h), status
-| sort bin(1h)
+| stats sum(1) as job_count by bin(1h), status
+| display bin(1h) as time_period, status, job_count
 ```
 
 ---
 
-### Widget Mapping for Easy Setup:
-1. **Logs Table**: Use the **Logs Table Query**.
-2. **Pie Chart**: Use the **Pie Chart Query**.
-3. **Line Chart**: Use the **Line Chart Query**.
-4. **Bar Chart**: Use the **Bar Chart Query**.
-5. **Stacked Area Chart**: Use the **Stacked Area Chart Query**.
+### **Enhanced Features**
+1. **Use `bin(1h)` or `bin(1d)`**:
+   - `bin(1h)`: Hourly trends (fine-grained data).
+   - `bin(1d)`: Daily trends (coarser aggregation).
 
-Copy-paste these queries into the respective widgets when adding them to your **CloudWatch dashboard**. Let me know if you need help setting this up!
+2. **Error Message Insights** (Optional):
+   - Add error message parsing to the bar chart to understand the most common failure reasons.
+
+   #### Query:
+   ```sql
+   fields @message
+   | parse @message /Status: (?<status>[^,]+), Resource Type: (?<resource_type>[^,]+), Message: (?<error_message>.+)/
+   | filter status = "FAILED"
+   | stats count(*) as failure_count by resource_type, error_message
+   | sort failure_count desc
+   ```
+
+3. **Filter by Time Range**:
+   - Modify time ranges in your queries for specific focus (e.g., last 7 days).
+
+---
+
+### Widget Mapping
+- **Logs Table**: Logs Table Query
+- **Pie Chart**: Pie Chart Query
+- **Line Chart**: Line Chart Query
+- **Bar Chart**: Bar Chart Query
+- **Stacked Area Chart**: Stacked Area Chart Query
+
+Let me know if you need help fine-tuning or visualizing these!
