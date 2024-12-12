@@ -1,38 +1,72 @@
 import boto3
 import time
 
-# Initialize the CloudWatch Logs client
-client = boto3.client('logs')
+def script_handler(event, context):
+    """
+    AWS Lambda handler to execute a CloudWatch Logs Insights query.
 
-# Define the query
-log_group = '/aws/lambda/your-log-group-name'  # Replace with your log group
-query = """
-fields @timestamp, @message
-| sort @timestamp desc
-| limit 20
-"""
+    Parameters:
+        event (dict): Event data passed to the Lambda function.
+        context (LambdaContext): Context object provided by AWS Lambda.
 
-# Start the query
-response = client.start_query(
-    logGroupName=log_group,
-    startTime=int((time.time() - 3600) * 1000),  # Last 1 hour
-    endTime=int(time.time() * 1000),            # Current time
-    queryString=query
-)
+    Returns:
+        dict: The results of the CloudWatch Logs Insights query.
+    """
+    # CloudWatch Logs client
+    client = boto3.client('logs')
 
-query_id = response['queryId']
+    # Extract parameters from the event
+    log_group_name = event.get('log_group_name', '/aws/your-log-group-name')  # Default log group name
+    time_range = event.get('time_range', 3600)  # Default to the last 1 hour
+    query_string = event.get('query_string', """
+    fields @timestamp, @message
+    | parse @message /Resource Name: (?<resource_name>[^,]+), Resource ID: (?<resource_id>[^,]+), Status: (?<status>[^,]+), Job ID: (?<job_id>[^,]+), Resource Type: (?<resource_type>[^,]+), Message: (?<error_message>.+)/
+    | filter status = "FAILED" and resource_type = "RDS"
+    | sort @timestamp desc
+    | display @timestamp, resource_name, resource_id, status, job_id, resource_type, error_message
+    | limit 50
+    """)
 
-# Wait for the query results
-status = 'Running'
-while status == 'Running':
-    result = client.get_query_results(queryId=query_id)
-    status = result['status']
-    time.sleep(1)  # Wait 1 second between status checks
+    # Define the time range
+    end_time = int(time.time() * 1000)  # Current time in milliseconds
+    start_time = end_time - (time_range * 1000)  # Start time
 
-# Print the results
-if status == 'Complete':
-    for row in result['results']:
-        print({col['field']: col['value'] for col in row})
+    try:
+        # Start the query
+        response = client.start_query(
+            logGroupName=log_group_name,
+            startTime=start_time,
+            endTime=end_time,
+            queryString=query_string
+        )
+        query_id = response['queryId']
+        print(f"Started query with ID: {query_id}")
 
-else:
-    print("Query failed or timed out.")
+        # Poll for query results
+        status = 'Running'
+        while status == 'Running':
+            result = client.get_query_results(queryId=query_id)
+            status = result['status']
+            if status == 'Running':
+                time.sleep(1)  # Wait 1 second before checking again
+
+        # Check and return results
+        if status == 'Complete':
+            print("Query completed successfully.")
+            results = []
+            for row in result['results']:
+                data = {col['field']: col['value'] for col in row}
+                results.append(data)
+            return {
+                "status": "success",
+                "results": results
+            }
+        else:
+            raise Exception(f"Query failed with status: {status}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
