@@ -12,12 +12,11 @@ def script_handler(event, context):
     Returns:
         dict: The results of the CloudWatch Logs Insights query.
     """
-    # CloudWatch Logs client
     client = boto3.client('logs')
 
     # Extract parameters from the event
-    log_group_name = event.get('log_group_name', '/aws/your-log-group-name')  # Default log group name
-    time_range = event.get('time_range', 3600)  # Default to the last 1 hour
+    log_group_name = event.get('log_group_name', '/aws/your-log-group-name')
+    time_range = event.get('time_range', 3600)  # Default: Last 1 hour
     query_string = event.get('query_string', """
     fields @timestamp, @message
     | parse @message /Resource Name: (?<resource_name>[^,]+), Resource ID: (?<resource_id>[^,]+), Status: (?<status>[^,]+), Job ID: (?<job_id>[^,]+), Resource Type: (?<resource_type>[^,]+), Message: (?<error_message>.+)/
@@ -43,26 +42,28 @@ def script_handler(event, context):
         print(f"Started query with ID: {query_id}")
 
         # Poll for query results
-        status = 'Running'
-        while status == 'Running':
+        while True:
             result = client.get_query_results(queryId=query_id)
             status = result['status']
-            if status == 'Running':
-                time.sleep(1)  # Wait 1 second before checking again
 
-        # Check and return results
-        if status == 'Complete':
-            print("Query completed successfully.")
-            results = []
-            for row in result['results']:
-                data = {col['field']: col['value'] for col in row}
-                results.append(data)
-            return {
-                "status": "success",
-                "results": results
-            }
-        else:
-            raise Exception(f"Query failed with status: {status}")
+            if status == 'Running':
+                print("Query is running...")
+            elif status == 'Complete':
+                print("Query completed successfully.")
+                results = []
+                for row in result['results']:
+                    data = {col['field']: col['value'] for col in row}
+                    results.append(data)
+                return {
+                    "status": "success",
+                    "results": results
+                }
+            elif status == 'Scheduled':
+                print("Query is scheduled. Waiting for execution...")
+            else:
+                raise Exception(f"Query failed with status: {status}")
+
+            time.sleep(2)  # Wait 2 seconds before checking again
 
     except Exception as e:
         print(f"Error: {e}")
