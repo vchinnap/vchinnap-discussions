@@ -10,7 +10,7 @@ def script_handler(event, context):
         context (LambdaContext): Context object provided by AWS Lambda.
 
     Returns:
-        dict: The results of the CloudWatch Logs Insights query.
+        dict: The results of the CloudWatch Logs Insights query without the @ptr field.
     """
     client = boto3.client('logs')
 
@@ -52,7 +52,8 @@ def script_handler(event, context):
                 print("Query completed successfully.")
                 results = []
                 for row in result['results']:
-                    data = {col['field']: col['value'] for col in row}
+                    # Filter out @ptr field
+                    data = {col['field']: col['value'] for col in row if col['field'] != '@ptr'}
                     results.append(data)
                 return {
                     "status": "success",
