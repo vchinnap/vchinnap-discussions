@@ -190,13 +190,12 @@ def script_handler(event, context):
 
 
 
-
 import boto3
 import os
 import time
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -211,7 +210,6 @@ LOG_GROUP_NAME = "/aws/backup-status"
 RETENTION_DAYS = 7
 RESOURCE_TYPES = ["RDS", "DynamoDB", "Aurora"]  # Add other resource types as needed
 STATES = ["FAILED", "ABORTED", "EXPIRED"]  # Filter states
-
 
 def script_handler(event, context):
     try:
@@ -234,47 +232,50 @@ def script_handler(event, context):
             logGroupName=LOG_GROUP_NAME, logStreamName=log_stream_name
         )
 
-        # Filter for today's date
-        today = datetime.utcnow()
-        start_of_day = today.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_time = int(start_of_day.timestamp() * 1000)
+        # Filter for jobs created in the last 24 hours
+        start_time = datetime.utcnow() - timedelta(days=1)
 
         # Iterate through each resource type
         for resource_type in RESOURCE_TYPES:
             # Iterate through each state
             for state in STATES:
-                response = backup_client.list_backup_jobs(
-                    ByState=state,
-                    ByResourceType=resource_type,
-                    ByCreationDateAfter=start_time,  # Filter jobs created today
-                )
-
-                # Process each job
-                for job in response.get("BackupJobs", []):
-                    # Extract job details
-                    resource_name = job.get("ResourceName", "N/A")
-                    resource_id = job.get("ResourceArn", "N/A").split(":")[-1]  # Extract the Resource ID from ARN
-                    status = job.get("State", "N/A")
-                    job_id = job.get("BackupJobId", "N/A")
-                    message = job.get("StatusMessage", "N/A")
-
-                    # Add resource_name and resource_id in log message
-                    log_message = (
-                        f"Resource Name: {resource_name}, Resource ID: {resource_id}, Status: {status}, "
-                        f"Job ID: {job_id}, Resource Type: {resource_type}, Message: {message}"
+                try:
+                    response = backup_client.list_backup_jobs(
+                        ByState=state,
+                        ByResourceType=resource_type,
+                        ByCreatedAfter=start_time,  # Filter jobs created after start_time
                     )
 
-                    logging.info(f"Logging job status: {log_message}")
+                    # Process each job
+                    for job in response.get("BackupJobs", []):
+                        # Extract job details
+                        resource_name = job.get("ResourceName", "N/A")
+                        resource_id = job.get("ResourceArn", "N/A").split(":")[-1]  # Extract the Resource ID from ARN
+                        status = job.get("State", "N/A")
+                        job_id = job.get("BackupJobId", "N/A")
+                        message = job.get("StatusMessage", "N/A")
 
-                    # Log to CloudWatch
-                    log_event = {
-                        "timestamp": int(round(time.time() * 1000)),
-                        "message": log_message,
-                    }
-                    cloudwatch_logs.put_log_events(
-                        logGroupName=LOG_GROUP_NAME,
-                        logStreamName=log_stream_name,
-                        logEvents=[log_event],
+                        # Add resource_name and resource_id in log message
+                        log_message = (
+                            f"Resource Name: {resource_name}, Resource ID: {resource_id}, Status: {status}, "
+                            f"Job ID: {job_id}, Resource Type: {resource_type}, Message: {message}"
+                        )
+
+                        logging.info(f"Logging job status: {log_message}")
+
+                        # Log to CloudWatch
+                        log_event = {
+                            "timestamp": int(round(time.time() * 1000)),
+                            "message": log_message,
+                        }
+                        cloudwatch_logs.put_log_events(
+                            logGroupName=LOG_GROUP_NAME,
+                            logStreamName=log_stream_name,
+                            logEvents=[log_event],
+                        )
+                except Exception as fetch_error:
+                    logging.error(
+                        f"Error fetching jobs for ResourceType: {resource_type}, State: {state}. Details: {str(fetch_error)}"
                     )
 
     except Exception as e:
@@ -282,6 +283,3 @@ def script_handler(event, context):
             f"An error occurred while processing backup jobs: {str(e)}\n{traceback.format_exc()}"
         )
         raise  # Optionally re-raise the exception to propagate it further
-
-
-
