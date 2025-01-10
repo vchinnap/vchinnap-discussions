@@ -42,3 +42,20 @@ def script_handler(event, context):
         return {"status": "Email sent successfully"}
     except Exception as error:
         return {"status": "Error sending email", "error": str(error)}
+
+
+
+
+
+
+
+
+try:
+    account_id = job.get("AccountId", None)  # Default to None if AccountId is missing
+    if not account_id:
+        raise ValueError("AccountId is missing in the job data")
+    if account_id != TARGET_ACCOUNT_ID:
+        raise ValueError(f"Unexpected AccountId: {account_id}. Expected: {TARGET_ACCOUNT_ID}")
+except Exception as e:
+    logging.error(f"Error processing AccountId: {str(e)}\nJob Data: {job}\n{traceback.format_exc()}")
+    raise  # Re-raise the exception to stop execution and propagate the error
