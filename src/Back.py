@@ -5,3 +5,10 @@
                     except Exception as tag_error:
                         logging.error(f"Error fetching tags for resource {resource_id}: {str(tag_error)}")
                         support_team = "N/A"
+
+
+
+"backup:ListTags",
+"rds:ListTagsForResource",
+"dynamodb:ListTagsOfResource",
+"redshift:DescribeTags"
