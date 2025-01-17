@@ -1,4 +1,15 @@
 fields @timestamp, @message
+| parse @message "Account ID: * Resource Name: * Resource ARN: * Status: * Job ID: * Resource Type: * Message: * Support Team: * Region: *" as account_id, resource_name, resource_arn, status, job_id, resource_type, message, support_team, region
+| filter status = "FAILED" 
+| stats count(*) as TotalJobs by support_team, status
+| sort TotalJobs desc
+| display account_id, resource_name, resource_arn, status, support_team, region
+
+
+
+
+
+fields @timestamp, @message
 | parse @message /Resource Name: (?<resource_name>[^,]+), Status: (?<status>[^,]+), Job ID: (?<job_id>[^,]+), Resource Type: (?<resource_type>[^,]+), Message: (?<error_message>.+)/
 | filter status = "FAILED" and resource_type = "RDS"
 | sort @timestamp desc
