@@ -6,7 +6,7 @@ config_client = boto3.client('config')
 sns_client = boto3.client('sns')
 
 # Get environment variables for Config Rule and SNS Topic ARN
-CONFIG_RULE_NAME = os.getenv('CONFIG_RULE_NAME', 'hwss-ebs-optimized-instance')
+CONFIG_RULE_NAME = os.getenv('CONFIG_RULE_NAME', 'default-config-rule')
 SNS_TOPIC_ARN = os.getenv('SNS_TOPIC_ARN', 'arn:aws:sns:us-east-1:123456789012:RemediationTopic')
 
 def lambda_handler(event, context):
@@ -46,14 +46,6 @@ def lambda_handler(event, context):
             Subject="AWS Config Remediation Failed"
         )
         return {"status": "Error", "message": str(e)}
-
-
-
-
-
-
-
-
 
 
 
