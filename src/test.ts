@@ -1,3 +1,53 @@
+import * as cdk from 'aws-cdk-lib';
+import * as config from 'aws-cdk-lib/aws-config';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { Construct } from 'constructs';
+
+export class AwsConfigRemediationStack extends cdk.Stack {
+    constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+        super(scope, id, props);
+
+        // Create an IAM role for remediation
+        const remediationRole = new iam.Role(this, 'RemediationRole', {
+            assumedBy: new iam.ServicePrincipal('ssm.amazonaws.com'),
+            managedPolicies: [
+                iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSConfigRemediationPolicy")
+            ]
+        });
+
+        // AWS Config Rule Name
+        const configRuleName = "YourConfigRule";
+
+        // Define the AWS Config Remediation
+        new config.CfnRemediationConfiguration(this, 'ConfigRemediation', {
+            configRuleName: configRuleName,
+            targetType: "SSM_DOCUMENT",
+            targetId: "AWS-PublishSNSNotification",
+            automatic: true,  // Enables auto-remediation
+            maximumAutomaticAttempts: 3,
+            retryAttemptSeconds: 30,
+            parameters: {
+                "AutomationAssumeRole": {
+                    staticValue: { values: [remediationRole.roleArn] }
+                },
+                "Message": {
+                    staticValue: { values: ["Testing HCOPS AWS Config 1111"] }
+                },
+                "TopicArn": {
+                    staticValue: { values: ["arn:aws:sns:us-east-1:123456789012:YourSNSTopic"] }
+                }
+            }
+        });
+    }
+}
+
+// Create the app and deploy the stack
+const app = new cdk.App();
+new AwsConfigRemediationStack(app, 'AwsConfigRemediationStack');
+
+
+
+
 import { App, TerraformStack } from 'cdktf';
 import { AzurermProvider, ResourceGroup, VirtualMachine } from '@cdktf/provider-azurerm';
 import { TerraformOutput } from 'cdktf';
