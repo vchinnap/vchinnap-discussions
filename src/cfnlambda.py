@@ -1,3 +1,61 @@
+import boto3
+
+# Initialize AWS Config client
+config_client = boto3.client("config")
+
+# AWS Config Rule Name
+config_rule_name = "HCOPS-ec2-volume-in-use-check-03"
+
+# SSM Automation Document Name
+ssm_document_name = "HCOPS-ec2-volume-in-use-check-03"
+
+# IAM Role that AWS Config will assume to execute remediation
+remediation_role_arn = "arn:aws:iam::123456789012:role/MyRemediationRole"
+
+# Attach auto-remediation with required parameters
+response = config_client.put_remediation_configurations(
+    RemediationConfigurations=[
+        {
+            "ConfigRuleName": config_rule_name,
+            "TargetType": "SSM_DOCUMENT",
+            "TargetId": ssm_document_name,
+            "Parameters": {
+                "AutomationAssumeRole": {  # ✅ Fix: Explicitly add this required parameter
+                    "StaticValue": {"Values": [remediation_role_arn]}
+                }
+            },
+            "Automatic": True,  # Enable auto-remediation
+            "MaximumAutomaticAttempts": 3,
+            "RetryAttemptSeconds": 30
+        }
+    ]
+)
+
+print(f"✅ Auto-remediation configured for Config rule: {config_rule_name}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################
 import json
 import boto3
 import os
