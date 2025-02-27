@@ -1,3 +1,74 @@
+import json
+import boto3
+
+SNS_TOPIC_ARN = "arn:aws:sns:region:account-id:your-sns-topic-name"
+
+def lambda_handler(event, context):
+    sns_client = boto3.client('sns')
+
+    print("Received event: " + json.dumps(event, indent=2))
+    
+    # Extract rule details
+    rule_name = event["configRuleName"]
+    invoking_event = json.loads(event["invokingEvent"])
+    
+    # Check compliance
+    compliance_status = invoking_event["configurationItem"]["complianceType"]
+    resource_id = invoking_event["configurationItem"]["resourceId"]
+    
+    if compliance_status == "NON_COMPLIANT":
+        message = f"Rule: {rule_name}\nResource ID: {resource_id} is non-compliant."
+        
+        # Send SNS notification
+        response = sns_client.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Message=message,
+            Subject=f"AWS Config Non-Compliance Alert - {rule_name}"
+        )
+        print(f"SNS Notification Sent: {response}")
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps("Remediation check complete for each rule")
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import boto3
 
 def lambda_handler(event, context):
