@@ -37,3 +37,47 @@ def lambda_handler(event, context):
         error_message = f"Error retrieving remediation configuration: {str(e)}"
         print(error_message)
         return {"status": "Error", "message": error_message}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import boto3
+
+# Initialize AWS Config client
+config_client = boto3.client("config")
+
+# Hardcoded AWS Config Rule Name (Ensure it exists in AWS Config)
+config_rule_name = "my-config-rule"
+
+# SNS Topic ARN (Replace with your SNS ARN)
+sns_topic_arn = "arn:aws:sns:us-east-1:123456789012:MyRemediationTopic"
+
+# Attach SNS-based remediation to the AWS Config rule
+response = config_client.put_remediation_configurations(
+    RemediationConfigurations=[
+        {
+            "ConfigRuleName": config_rule_name,
+            "TargetType": "SNS",
+            "TargetId": sns_topic_arn,  # SNS ARN
+            "Automatic": True,  # Enables auto-notification
+            "MaximumAutomaticAttempts": 3,
+            "RetryAttemptSeconds": 30
+        }
+    ]
+)
+
+print(f"✅ SNS Notification for auto-remediation configured for rule: {config_rule_name}")
