@@ -4,35 +4,22 @@ def lambda_handler(event, context):
     config_client = boto3.client('config')
     
     remediation_configuration = {
-        "ConfigRuleName": "sns-topic-policy-check",  # Update with your Config rule name
-        "TargetType": "SSM_DOCUMENT",
-        "TargetId": "AWS-ConfigureSNSPolicy",  # Replace with your SSM document name
+        "ConfigRuleName": "your-config-rule",            # Replace with your AWS Config rule name
+        "TargetType": "SSM_DOCUMENT",                      # Must be SSM_DOCUMENT for built-in remediation actions
+        "TargetId": "AWS-PublishSNSNotification",          # Built-in remediation action for SNS notifications
         "Parameters": {
             "SNSTopicArn": {
                 "StaticValue": {
                     "Values": [
-                        "arn:aws:sns:us-east-1:123456789012:MySNSTopic"  # Replace with your SNS Topic ARN
-                    ]
-                }
-            },
-            "AutomationAssumeRole": {
-                "StaticValue": {
-                    "Values": [
-                        "arn:aws:iam::123456789012:role/ConfigRemediationRole"  # Replace with your IAM role ARN
+                        "arn:aws:sns:us-east-1:123456789012:YourNotificationTopic"  # Replace with your SNS Topic ARN
                     ]
                 }
             }
         },
-        "ResourceType": "AWS::SNS::Topic",
+        "ResourceType": "AWS::SNS::Topic",                # The resource type your rule evaluates (update if needed)
         "Automatic": True,
         "MaximumAutomaticAttempts": 3,
-        "RetryAttemptSeconds": 60,
-        "ExecutionControls": {
-            "SsmControls": {
-                "ConcurrentExecutionRatePercentage": 10,
-                "ErrorPercentage": 50
-            }
-        }
+        "RetryAttemptSeconds": 60
     }
     
     response = config_client.put_remediation_configurations(
@@ -40,7 +27,6 @@ def lambda_handler(event, context):
     )
     
     return response
-
 
 
 
