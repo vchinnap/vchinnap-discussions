@@ -28,15 +28,15 @@ export class EbsBackupPlanRule extends cdk.Stack {
         // Define Automation Role
         const automationAssumeRole = `arn:aws:iam::${accountID}:role/HC-AWS-AutomationRole`;
 
-        // ✅ Corrected Message Format
+        // ✅ Message Format
         const message = `AWS Config non-compliant resource.
-ResourceId: {{RESOURCE_ID}}
-ResourceType: {{RESOURCE_TYPE}}
-ComplianceType: {{COMPLIANCE_TYPE}}
-AWS Account ID: {{ACCOUNT_ID}}
-AWS Region: {{AWS_REGION}}
-Config Rule Name: {{CONFIG_RULE_NAME}}
-Details: {{ANNOTATION}}`;
+                        ResourceId: {{RESOURCE_ID}}
+                        ResourceType: {{RESOURCE_TYPE}}
+                        ComplianceType: {{COMPLIANCE_TYPE}}
+                        AWS Account ID: {{ACCOUNT_ID}}
+                        AWS Region: {{AWS_REGION}}
+                        Config Rule Name: {{CONFIG_RULE_NAME}}
+                        Details: {{ANNOTATION}}`;
 
         // Define parameters for the SSM Automation document
         const parameters = {
