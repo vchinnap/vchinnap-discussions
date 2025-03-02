@@ -1,13 +1,13 @@
 import * as cdk from '@aws-cdk/core';
-import * as config from '@aws-cdk/aws-config';
+import { aws_config as config } from 'aws-cdk-lib';
 import * as ssm from '@aws-cdk/aws-ssm';
 
-export class Ec2RemediationStack extends cdk.Stack {
+export class EbsBackupPlanRule extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // Define a Config rule to check for required tags on EC2 instances
-    const rule = new config.ManagedRule(this, 'RequiredTagsRule', {
+    const rule = new OMBConstruct(this, 'RequiredTagsRule', {
       identifier: 'REQUIRED_TAGS', // AWS managed rule for checking required tags
       configRuleName: 'required-tags',
       inputParameters: {
