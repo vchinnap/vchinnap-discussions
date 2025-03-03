@@ -31,13 +31,13 @@ export class EbsBackupPlanRule extends cdk.Stack {
 
         // ✅ Message format for AWS Config remediation notifications
         const message = `AWS Config non-compliant resource.
-ResourceId: {resourceId}
-ResourceType: {resourceType}
-ComplianceType: {complianceType}
-AWS Account ID: {accountId}
-AWS Region: {awsRegion}
-Config Rule Name: {configRuleName}
-Details: {annotation}`;
+                        ResourceId: {resourceId}
+                        ResourceType: {resourceType}
+                        ComplianceType: {complianceType}
+                        AWS Account ID: {accountId}
+                        AWS Region: {awsRegion}
+                        Config Rule Name: {configRuleName}
+                        Details: {annotation}`;
 
         // Define parameters for the SSM Automation document
         const parameters = {
