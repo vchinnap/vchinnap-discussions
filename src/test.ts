@@ -143,3 +143,50 @@ export class EbsOptimizedInstanceRule extends cdk.Stack {
         });
     }
 }
+
+
+
+
+
+
+
+import * as cdk from 'aws-cdk-lib';
+import * as config from 'aws-cdk-lib/aws-config';
+
+const stack = new cdk.Stack();
+
+const accountId = cdk.Aws.ACCOUNT_ID; // ✅ Dynamically retrieves AWS Account ID
+const awsRegion = cdk.Aws.REGION; // ✅ Dynamically retrieves AWS Region
+const configRuleName = "EBS_BACKUP_PLAN_RULE"; // Ensure this rule exists in AWS Config
+const complianceType = "NON_COMPLIANT";
+const resourceType = "AWS::EC2::Volume";
+
+// ✅ Create a detailed annotation message with dynamic values
+const annotationMessage = `Remediation triggered:
+- AWS Account ID: ${accountId}
+- AWS Region: ${awsRegion}
+- Config Rule Name: ${configRuleName}
+- Compliance Type: ${complianceType}
+- Resource Type: ${resourceType}
+- Action: EBS volume is not backed up, applying remediation`;
+
+const remediation = new config.CfnRemediationConfiguration(stack, 'MyRemediation', {
+  configRuleName: configRuleName,
+  targetId: "AWS-EnableEBSBackups", // AWS managed SSM Automation Document
+  targetType: "SSM_DOCUMENT",
+  parameters: {
+    // ✅ Annotation now contains dynamically fetched values
+    "annotation": { StaticValue: { Values: [annotationMessage] } },
+
+    // ✅ Allowed: resourceId as ResourceValue (dynamically retrieved from the event)
+    "resourceId": { ResourceValue: { Value: "RESOURCE_ID" } },
+
+    // ✅ These are now dynamically retrieved instead of hardcoded
+    "accountId": { StaticValue: { Values: [accountId] } }, 
+    "awsRegion": { StaticValue: { Values: [awsRegion] } },
+    "configRuleName": { StaticValue: { Values: [configRuleName] } },
+    "complianceType": { StaticValue: { Values: [complianceType] } },
+    "resourceType": { StaticValue: { Values: [resourceType] } }
+  }
+});
+
