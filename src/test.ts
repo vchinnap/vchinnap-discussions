@@ -190,3 +190,49 @@ const remediation = new config.CfnRemediationConfiguration(stack, 'MyRemediation
   }
 });
 
+
+
+
+
+
+
+
+
+
+
+
+
+import * as cdk from 'aws-cdk-lib';
+import * as config from 'aws-cdk-lib/aws-config';
+
+const stack = new cdk.Stack();
+
+const accountId = cdk.Aws.ACCOUNT_ID; // ✅ Dynamically retrieves AWS Account ID
+const awsRegion = cdk.Aws.REGION; // ✅ Dynamically retrieves AWS Region
+const configRuleName = "EBS_BACKUP_PLAN_RULE"; // Ensure this rule exists in AWS Config
+const complianceType = "NON_COMPLIANT";
+const resourceType = "AWS::EC2::Volume";
+
+// ✅ Keep annotation concise without redundant fields
+const annotationMessage = `Remediation triggered for ${configRuleName} in ${awsRegion}. 
+Applying fix for a non-compliant ${resourceType}. Check AWS Config for details.`;
+
+const remediation = new config.CfnRemediationConfiguration(stack, 'MyRemediation', {
+  configRuleName: configRuleName,
+  targetId: "AWS-EnableEBSBackups", // AWS managed SSM Automation Document
+  targetType: "SSM_DOCUMENT",
+  parameters: {
+    // ✅ Annotation now contains only essential information
+    "annotation": { StaticValue: { Values: [annotationMessage] } },
+
+    // ✅ Required structured inputs (MUST BE PASSED separately)
+    "resourceId": { ResourceValue: { Value: "RESOURCE_ID" } }, // Dynamic
+
+    // ❌ Must be static because AWS Config requires them in a structured format
+    "accountId": { StaticValue: { Values: [accountId] } }, 
+    "awsRegion": { StaticValue: { Values: [awsRegion] } },
+    "configRuleName": { StaticValue: { Values: [configRuleName] } },
+    "complianceType": { StaticValue: { Values: [complianceType] } },
+    "resourceType": { StaticValue: { Values: [resourceType] } }
+  }
+});
