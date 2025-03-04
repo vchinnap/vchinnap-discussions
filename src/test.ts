@@ -236,3 +236,27 @@ const remediation = new config.CfnRemediationConfiguration(stack, 'MyRemediation
     "resourceType": { StaticValue: { Values: [resourceType] } }
   }
 });
+
+
+
+
+
+
+const resourceId = {
+  "Message": { ResourceValue: { Value: "RESOURCE_ID" } }
+};
+
+const parameters = {
+  "AutomationAssumeRole": { StaticValue: { Values: [automationAssumeRole] } },
+  "TopicArn": { StaticValue: { Values: [snsTopicArn] } },
+  "Message": { ResourceValue: { Value: "RESOURCE_ID" } },
+  "Subject": { 
+    StaticValue: { 
+      Values: [`AWS Config Violation: ${ruleName} | ${complianceType} | in ${region} for ${resourceType} [${resourceId.Message.ResourceValue.Value}]`] 
+    } 
+  },
+  "accountId": { StaticValue: { Values: [accountID] } },
+  "awsRegion": { StaticValue: { Values: [region] } },
+  "configRuleName": { StaticValue: { Values: [ruleName] } },
+  "complianceType": { StaticValue: { Values: [complianceType] } },
+};
