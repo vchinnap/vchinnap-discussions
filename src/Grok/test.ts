@@ -6,23 +6,24 @@ class EbsBackupPlanRule extends cdk.Stack {
     constructor(scope: Construct, id: string, props?: cdk.StackProps) {
         super(scope, id, props);
 
+        // Configuration details
         const ruleName = "EbsBackupRule";
-        const ssmDocumentName = "AWS-PublishSNSNotification"; // SSM document to publish SNS messages
+        const ssmDocumentName = "AWS-PublishSNSNotification"; // Custom SSM document
         const resourceType = "AWS::EC2::Volume"; // Targets EBS volumes
         const snsTopicArn = "arn:aws:sns:us-east-1:123456789012:MyTopic"; // Replace with your SNS topic ARN
         const assumeRoleArn = "arn:aws:iam::123456789012:role/AWSConfigRemediationRole"; // Replace with your IAM role ARN
 
-        // JSON message payload with dynamic volume ID
+        // Define the message payload (customize as needed)
         const messagePayload = JSON.stringify({
             environment: "Production",
             alert_type: "EBS Backup Compliance Violation",
             resource_info: {
-                volume_id: "{ResourceId}" // Placeholder for the non-compliant volume ID
+                volume_id: "See ResourceId in notification"
             }
         });
 
         // Define the remediation configuration
-        const remediationRule = new config.CfnRemediationConfiguration(this, ruleName + '-Remediation', {
+        const remediationRule = new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation`, {
             configRuleName: ruleName,
             targetId: ssmDocumentName,  // SSM document for remediation
             targetType: 'SSM_DOCUMENT',
@@ -38,17 +39,20 @@ class EbsBackupPlanRule extends cdk.Stack {
                 TopicArn: {
                     StaticValue: { Values: [snsTopicArn] }
                 },
+                Subject: {
+                    StaticValue: { Values: ["EBS Backup Compliance Alert"] }
+                },
                 Message: {
                     StaticValue: { Values: [messagePayload] }
                 },
-                Subject: {
-                    StaticValue: { Values: ["EBS Backup Compliance Alert"] }
+                ResourceId: {
+                    ResourceValue: { Value: 'RESOURCE_ID' } // Tells AWS Config to use the resource’s ID
                 },
                 AutomationAssumeRole: {
                     StaticValue: { Values: [assumeRoleArn] }
                 }
             },
-            resourceType: resourceType, // Specifies EBS volumes
+            resourceType: resourceType, // Targets EBS volumes
             retryAttemptSeconds: 300, // Retry delay in seconds
             targetVersion: '1'
         });
