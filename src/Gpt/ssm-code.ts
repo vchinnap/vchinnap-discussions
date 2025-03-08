@@ -8,6 +8,12 @@ export class MyLambdaStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+
+    const existingRole = iam.Role.fromRoleArn(this, 'ExistingRole', 'arn:aws:iam::ACCOUNT_ID:role/YourExistingRole', {
+      mutable: false, // Prevents CDK from modifying the role's policies
+    });
+
+
     // Step 1: Create the Lambda Function
     const myFunction = new lambda.Function(this, 'MyLambdaFunction', {
       runtime: lambda.Runtime.NODEJS_18_X,
