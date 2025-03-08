@@ -1,67 +1,40 @@
-const customDocument = new ssm.CfnDocument(this, 'CustomConfigNotification', {
-    content: {
-        schemaVersion: '0.3',
-        description: 'Custom notification for AWS Config non-compliance',
-        parameters: {
-            AutomationAssumeRole: { type: 'String' },
-            TopicArn: { type: 'String' },
-            resourceId: { type: 'String' },
-            resourceType: { type: 'String' },
-            complianceType: { type: 'String' },
-            accountId: { type: 'String' },
-            awsRegion: { type: 'String' },
-            configRuleName: { type: 'String' },
-            annotation: { type: 'String' },
-        },
-        mainSteps: [
-            {
-                name: 'ConstructMessage',
-                action: 'aws:executeScript',
-                inputs: {
-                    Runtime: 'python3.8',
-                    Handler: 'handler',
-                    Script: `
-def handler(event, context):
-    msg = """AWS Config non-compliant resource.
-ResourceId: {resourceId}
-ResourceType: {resourceType}
-ComplianceType: {complianceType}
-AWS Account ID: {accountId}
-AWS Region: {awsRegion}
-Config Rule Name: {configRuleName}
-Details: {annotation}""".format(**event)
-    return {"message": msg}
-                    `.trim(),
-                    InputPayload: {
-                        resourceId: '{{ resourceId }}',
-                        resourceType: '{{ resourceType }}',
-                        complianceType: '{{ complianceType }}',
-                        accountId: '{{ accountId }}',
-                        awsRegion: '{{ awsRegion }}',
-                        configRuleName: '{{ configRuleName }}',
-                        annotation: '{{ annotation }}',
-                    },
-                },
-                outputs: [
-                    {
-                        Name: 'message',
-                        Selector: '$.Payload.message',
-                        Type: 'String',
-                    },
-                ],
-            },
-            {
-                name: 'PublishToSNS',
-                action: 'aws:executeAwsApi',
-                inputs: {
-                    Service: 'sns',
-                    Api: 'Publish',
-                    TopicArn: '{{ TopicArn }}',
-                    Message: '{{ ConstructMessage.message }}',
-                },
-            },
-        ],
-    },
-    documentType: 'Automation',
-    name: 'CustomConfigNotification',
-});
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { Construct } from 'constructs';
+
+export class MyLambdaStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Step 1: Create the Lambda Function
+    const myFunction = new lambda.Function(this, 'MyLambdaFunction', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda'), // Folder containing your Lambda code
+    });
+
+    // Step 2: Define the AWS SDK call to invoke the Lambda function
+    const lambdaInvocation = {
+      service: 'Lambda',
+      action: 'invoke',
+      parameters: {
+        FunctionName: myFunction.functionName,
+        InvocationType: 'Event',
+        Payload: JSON.stringify({ key: 'value' }),
+      },
+      physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()), // Ensures a new invocation on each deployment
+    };
+
+    // Step 3: Create the Custom Resource to invoke the Lambda function on deployment
+    const lambdaTrigger = new cr.AwsCustomResource(this, 'InvokeLambdaOnDeploy', {
+      onCreate: lambdaInvocation,
+      onUpdate: lambdaInvocation,
+      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({ resources: [myFunction.functionArn] }),
+    });
+
+    // Ensure the custom resource is created after the Lambda function
+    lambdaTrigger.node.addDependency(myFunction);
+  }
+}
