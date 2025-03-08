@@ -1,27 +1,40 @@
-import boto3
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as cr from 'aws-cdk-lib/custom-resources';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { Construct } from 'constructs';
 
-# Initialize AWS Config Client
-client = boto3.client('config')
+export class MyLambdaStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
 
-# Specify the AWS Config Rule Name
-config_rule_name = "<RULE_NAME>"
+    // Step 1: Create the Lambda Function
+    const myFunction = new lambda.Function(this, 'MyLambdaFunction', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda'), // Folder containing your Lambda code
+    });
 
-# Fetch Remediation Execution Details
-response = client.describe_remediation_executions(
-    ConfigRuleName=config_rule_name
-)
+    // Step 2: Define the AWS SDK call to invoke the Lambda function
+    const lambdaInvocation = {
+      service: 'Lambda',
+      action: 'invoke',
+      parameters: {
+        FunctionName: myFunction.functionName,
+        InvocationType: 'Event',
+        Payload: JSON.stringify({ key: 'value' }),
+      },
+      physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()), // Ensures a new invocation on each deployment
+    };
 
-# Process and Print Required Information
-for execution in response['RemediationExecutions']:
-    print(f"Resource ID: {execution['ResourceKey']['ResourceId']}")
-    print(f"Resource Type: {execution['ResourceKey']['ResourceType']}")
-    print(f"State: {execution['State']}")
-    
-    if 'StepDetails' in execution:
-        for step in execution['StepDetails']:
-            print(f"  - Step Name: {step.get('Name', 'N/A')}")
-            print(f"    Step State: {step.get('State', 'N/A')}")
-            print(f"    Step Message: {step.get('ErrorMessage', 'N/A')}")
-            print(f"    Step Annotation: {step.get('RemediationType', 'N/A')}")
-    
-    print("-" * 40)
+    // Step 3: Create the Custom Resource to invoke the Lambda function on deployment
+    const lambdaTrigger = new cr.AwsCustomResource(this, 'InvokeLambdaOnDeploy', {
+      onCreate: lambdaInvocation,
+      onUpdate: lambdaInvocation,
+      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({ resources: [myFunction.functionArn] }),
+    });
+
+    // Ensure the custom resource is created after the Lambda function
+    lambdaTrigger.node.addDependency(myFunction);
+  }
+}
