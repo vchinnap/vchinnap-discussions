@@ -1,11 +1,9 @@
-#!/usr/bin/env python3
-
 import subprocess
 import time
 import logging
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 def is_ssm_agent_running():
     try:
@@ -17,22 +15,32 @@ def is_ssm_agent_running():
 def restart_ssm_agent():
     try:
         subprocess.run(["sudo", "systemctl", "restart", "amazon-ssm-agent"], check=True)
-        logging.info("SSM Agent restart command issued.")
+        logger.info("SSM Agent restart command issued.")
         time.sleep(2)
         if is_ssm_agent_running():
-            logging.info("SSM Agent restarted and is now running.")
+            logger.info("SSM Agent restarted and is now running.")
             return {"status": "restarted"}
         else:
-            logging.error("SSM Agent did not restart successfully.")
+            logger.error("SSM Agent did not restart successfully.")
             return {"status": "restart_failed"}
     except subprocess.CalledProcessError as e:
-        logging.error(f"Failed to restart SSM Agent: {e}")
+        logger.error(f"Failed to restart SSM Agent: {e}")
         return {"status": "error", "details": str(e)}
 
-def handler():
+def lambda_handler(event, context):
+    instance_id = event.get("InstanceId")
+
+    if not instance_id:
+        return {"status": "error", "message": "InstanceId is required in the event"}
+
+    logger.info(f"Processing request for instance: {instance_id}")
+
     if not is_ssm_agent_running():
-        logging.warning("SSM Agent is not running. Attempting restart...")
-        return restart_ssm_agent()
+        logger.warning("SSM Agent is not running. Attempting restart...")
+        result = restart_ssm_agent()
     else:
-        logging.info("SSM Agent is running.")
-        return {"status": "running"}
+        logger.info("SSM Agent is running.")
+        result = {"status": "running"}
+
+    result["instance_id"] = instance_id
+    return result
