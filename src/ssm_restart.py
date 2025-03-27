@@ -9,21 +9,20 @@ def lambda_handler(event, context):
     if not instance_id:
         return {"status": "error", "message": "InstanceId not provided in the event"}
 
-    # 1. Get platform (Windows or Linux)
+    # 1. Get platform info (Windows or Linux)
     try:
         reservations = ec2.describe_instances(InstanceIds=[instance_id])['Reservations']
         if not reservations:
             return {"status": "error", "message": "Instance not found"}
 
         instance = reservations[0]['Instances'][0]
-        platform = instance.get('Platform', 'Linux')  # 'Windows' or default to 'Linux'
+        platform = instance.get('Platform', 'Linux')  # 'Windows' or assume 'Linux'
         is_windows = platform.lower() == 'windows'
-
         print(f"Detected platform: {platform}")
     except Exception as e:
-        return {"status": "error", "message": f"Error fetching instance platform: {str(e)}"}
+        return {"status": "error", "message": f"Error getting platform info: {str(e)}"}
 
-    # 2. Set commands based on platform
+    # 2. Set up commands based on platform
     if is_windows:
         check_cmd = 'Get-Service AmazonSSMAgent | Select-Object -ExpandProperty Status'
         restart_cmd = 'Restart-Service AmazonSSMAgent'
@@ -42,31 +41,34 @@ def lambda_handler(event, context):
             TimeoutSeconds=30
         )
 
-        command_id = check_response['Command']['CommandId']
+        check_command_id = check_response['Command']['CommandId']
         time.sleep(3)
 
-        # 4. Get command output
-        invocation = ssm.get_command_invocation(
-            CommandId=command_id,
+        check_result = ssm.get_command_invocation(
+            CommandId=check_command_id,
             InstanceId=instance_id
         )
 
-        status_output = invocation.get('StandardOutputContent', '').strip().lower()
-        command_status = invocation.get('Status')
+        check_status = check_result.get('Status')
+        check_stdout = check_result.get('StandardOutputContent', '').strip().lower()
+        check_stderr = check_result.get('StandardErrorContent', '').strip()
 
-        print(f"Check command status: {command_status}")
-        print(f"SSM Agent status output: {status_output}")
+        print(f"Check SSM Agent status: {check_status}")
+        print(f"STDOUT: {check_stdout}")
+        print(f"STDERR: {check_stderr}")
 
-        if command_status in ['DeliveryTimedOut', 'Undeliverable', 'Terminated']:
+        if check_status in ['DeliveryTimedOut', 'Undeliverable', 'Terminated']:
             return {
                 "status": "unreachable",
                 "message": f"Cannot connect to SSM Agent on {instance_id}. It may be stopped.",
-                "command_status": command_status
+                "check_status": check_status,
+                "stdout": check_stdout,
+                "stderr": check_stderr
             }
 
-        # 5. Restart if not running
-        if 'running' not in status_output and 'active' not in status_output:
-            print("SSM Agent is not active. Attempting restart...")
+        # 4. Restart if not active/running
+        if 'running' not in check_stdout and 'active' not in check_stdout:
+            print("SSM Agent not running. Sending restart command...")
 
             restart_response = ssm.send_command(
                 InstanceIds=[instance_id],
@@ -84,15 +86,21 @@ def lambda_handler(event, context):
                     InstanceId=instance_id
                 )
 
-                restart_status = restart_result['Status']
+                restart_status = restart_result.get('Status')
+                restart_stdout = restart_result.get('StandardOutputContent', '').strip()
+                restart_stderr = restart_result.get('StandardErrorContent', '').strip()
+
                 print(f"Restart command status: {restart_status}")
+                print(f"STDOUT: {restart_stdout}")
+                print(f"STDERR: {restart_stderr}")
 
                 if restart_status == 'Success':
                     return {
                         "status": "restart_succeeded",
                         "platform": platform,
                         "instance_id": instance_id,
-                        "restart_command_id": restart_command_id
+                        "restart_command_id": restart_command_id,
+                        "output": restart_stdout
                     }
                 else:
                     return {
@@ -100,16 +108,15 @@ def lambda_handler(event, context):
                         "platform": platform,
                         "instance_id": instance_id,
                         "restart_command_id": restart_command_id,
-                        "error": restart_result.get('StandardErrorContent', 'Unknown error'),
-                        "output": restart_result.get('StandardOutputContent', '')
+                        "restart_status": restart_status,
+                        "stdout": restart_stdout,
+                        "stderr": restart_stderr
                     }
 
             except Exception as e:
                 return {
                     "status": "error",
-                    "message": f"Failed to get restart command result: {str(e)}",
-                    "platform": platform,
-                    "instance_id": instance_id,
+                    "message": f"Could not get restart command result: {str(e)}",
                     "restart_command_id": restart_command_id
                 }
 
@@ -117,7 +124,8 @@ def lambda_handler(event, context):
             return {
                 "status": "running",
                 "platform": platform,
-                "instance_id": instance_id
+                "instance_id": instance_id,
+                "output": check_stdout
             }
 
     except ssm.exceptions.InvalidInstanceId as e:
