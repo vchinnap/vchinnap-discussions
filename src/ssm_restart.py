@@ -9,7 +9,7 @@ def lambda_handler(event, context):
     if not instance_id:
         return {"status": "error", "message": "InstanceId not provided in the event"}
 
-    # 1. Get platform info
+    # 1. Get instance platform info
     try:
         reservations = ec2.describe_instances(InstanceIds=[instance_id])['Reservations']
         instance = reservations[0]['Instances'][0]
@@ -54,28 +54,29 @@ def lambda_handler(event, context):
     except Exception as e:
         return {"status": "error", "message": f"Failed to check SSM Agent status: {str(e)}"}
 
-    # 3. SSM Agent is not running — deploy self-healing script + scheduled task
+    # 3. Agent is not running – deploy script + scheduled task
     try:
-        create_script_and_task = [
-            # Ensure folder exists
-            'New-Item -ItemType Directory -Path "C:\\Scripts" -Force',
+        # Clean PowerShell block as a single script
+        script = r'''
+New-Item -ItemType Directory -Path "C:\Scripts" -Force | Out-Null
 
-            # Create restart script
-            '$script = @\'',
-            '$service = Get-Service AmazonSSMAgent -ErrorAction SilentlyContinue',
-            'if ($service.Status -ne "Running") {',
-            '    Start-Service AmazonSSMAgent',
-            '    "Restarted at $(Get-Date)" | Out-File "C:\\Scripts\\ssm-restart-log.txt" -Append',
-            '}',
-            '\'@',
-            '$script | Set-Content -Path "C:\\Scripts\\AutoStart-SSMAgent.ps1"',
+$scriptContent = @"
+$service = Get-Service AmazonSSMAgent -ErrorAction SilentlyContinue
+if ($service.Status -ne 'Running') {
+    Start-Service AmazonSSMAgent
+    'Restarted at $(Get-Date)' | Out-File 'C:\Scripts\ssm-restart-log.txt' -Append
+}
+"@
 
-            # Register scheduled task
-            '$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoProfile -WindowStyle Hidden -File C:\\Scripts\\AutoStart-SSMAgent.ps1"',
-            '$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration ([TimeSpan]::MaxValue)',
-            '$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest',
-            'Register-ScheduledTask -TaskName "AutoStartSSMAgent" -Action $action -Trigger $trigger -Principal $principal -Force'
-        ]
+Set-Content -Path "C:\Scripts\AutoStart-SSMAgent.ps1" -Value $scriptContent
+
+$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoProfile -WindowStyle Hidden -File C:\Scripts\AutoStart-SSMAgent.ps1"
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration ([TimeSpan]::MaxValue)
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName "AutoStartSSMAgent" -Action $action -Trigger $trigger -Principal $principal -Force
+'''
+
+        create_script_and_task = [script]
 
         setup_response = ssm.send_command(
             InstanceIds=[instance_id],
