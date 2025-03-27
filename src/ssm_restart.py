@@ -9,126 +9,107 @@ def lambda_handler(event, context):
     if not instance_id:
         return {"status": "error", "message": "InstanceId not provided in the event"}
 
-    # 1. Get platform info (Windows or Linux)
+    # 1. Get platform info
     try:
         reservations = ec2.describe_instances(InstanceIds=[instance_id])['Reservations']
-        if not reservations:
-            return {"status": "error", "message": "Instance not found"}
-
         instance = reservations[0]['Instances'][0]
-        platform = instance.get('Platform', 'Linux')  # 'Windows' or assume 'Linux'
+        platform = instance.get('Platform', 'Linux')
         is_windows = platform.lower() == 'windows'
-        print(f"Detected platform: {platform}")
     except Exception as e:
-        return {"status": "error", "message": f"Error getting platform info: {str(e)}"}
+        return {"status": "error", "message": f"Failed to get instance platform: {str(e)}"}
 
-    # 2. Set up commands based on platform
-    if is_windows:
-        check_cmd = 'Get-Service AmazonSSMAgent | Select-Object -ExpandProperty Status'
-        restart_cmd = 'Restart-Service AmazonSSMAgent'
-        document = 'AWS-RunPowerShellScript'
-    else:
-        check_cmd = 'sudo systemctl is-active amazon-ssm-agent || echo "inactive"'
-        restart_cmd = 'sudo systemctl restart amazon-ssm-agent'
-        document = 'AWS-RunShellScript'
+    if not is_windows:
+        return {"status": "unsupported", "message": "This solution only supports Windows EC2 instances."}
 
+    # 2. Check if SSM Agent is running
     try:
-        # 3. Send command to check agent status
+        check_cmd = 'Get-Service AmazonSSMAgent | Select-Object -ExpandProperty Status'
         check_response = ssm.send_command(
             InstanceIds=[instance_id],
-            DocumentName=document,
+            DocumentName="AWS-RunPowerShellScript",
             Parameters={'commands': [check_cmd]},
             TimeoutSeconds=30
         )
 
-        check_command_id = check_response['Command']['CommandId']
+        command_id = check_response['Command']['CommandId']
         time.sleep(3)
 
-        check_result = ssm.get_command_invocation(
-            CommandId=check_command_id,
+        result = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+        status_output = result.get('StandardOutputContent', '').strip().lower()
+        command_status = result.get('Status')
+
+        if command_status in ['DeliveryTimedOut', 'Undeliverable']:
+            return {
+                "status": "unreachable",
+                "message": "SSM Agent is down. Cannot deploy script.",
+                "command_status": command_status
+            }
+
+        if 'running' in status_output:
+            return {
+                "status": "running",
+                "message": "SSM Agent is already running. No action needed.",
+                "instance_id": instance_id
+            }
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to check SSM Agent status: {str(e)}"}
+
+    # 3. SSM Agent is not running — deploy self-healing script + scheduled task
+    try:
+        create_script_and_task = [
+            # Ensure folder exists
+            'New-Item -ItemType Directory -Path "C:\\Scripts" -Force',
+
+            # Create restart script
+            '$script = @\'',
+            '$service = Get-Service AmazonSSMAgent -ErrorAction SilentlyContinue',
+            'if ($service.Status -ne "Running") {',
+            '    Start-Service AmazonSSMAgent',
+            '    "Restarted at $(Get-Date)" | Out-File "C:\\Scripts\\ssm-restart-log.txt" -Append',
+            '}',
+            '\'@',
+            '$script | Set-Content -Path "C:\\Scripts\\AutoStart-SSMAgent.ps1"',
+
+            # Register scheduled task
+            '$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-NoProfile -WindowStyle Hidden -File C:\\Scripts\\AutoStart-SSMAgent.ps1"',
+            '$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration ([TimeSpan]::MaxValue)',
+            '$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest',
+            'Register-ScheduledTask -TaskName "AutoStartSSMAgent" -Action $action -Trigger $trigger -Principal $principal -Force'
+        ]
+
+        setup_response = ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunPowerShellScript",
+            Parameters={'commands': create_script_and_task},
+            TimeoutSeconds=60
+        )
+
+        setup_command_id = setup_response['Command']['CommandId']
+        time.sleep(5)
+
+        setup_result = ssm.get_command_invocation(
+            CommandId=setup_command_id,
             InstanceId=instance_id
         )
 
-        check_status = check_result.get('Status')
-        check_stdout = check_result.get('StandardOutputContent', '').strip().lower()
-        check_stderr = check_result.get('StandardErrorContent', '').strip()
-
-        print(f"Check SSM Agent status: {check_status}")
-        print(f"STDOUT: {check_stdout}")
-        print(f"STDERR: {check_stderr}")
-
-        if check_status in ['DeliveryTimedOut', 'Undeliverable', 'Terminated']:
+        if setup_result['Status'] == 'Success':
             return {
-                "status": "unreachable",
-                "message": f"Cannot connect to SSM Agent on {instance_id}. It may be stopped.",
-                "check_status": check_status,
-                "stdout": check_stdout,
-                "stderr": check_stderr
+                "status": "task_created",
+                "message": "Auto-restart script and scheduled task successfully deployed.",
+                "instance_id": instance_id
             }
-
-        # 4. Restart if not active/running
-        if 'running' not in check_stdout and 'active' not in check_stdout:
-            print("SSM Agent not running. Sending restart command...")
-
-            restart_response = ssm.send_command(
-                InstanceIds=[instance_id],
-                DocumentName=document,
-                Parameters={'commands': [restart_cmd]},
-                TimeoutSeconds=30
-            )
-
-            restart_command_id = restart_response['Command']['CommandId']
-            time.sleep(3)
-
-            try:
-                restart_result = ssm.get_command_invocation(
-                    CommandId=restart_command_id,
-                    InstanceId=instance_id
-                )
-
-                restart_status = restart_result.get('Status')
-                restart_stdout = restart_result.get('StandardOutputContent', '').strip()
-                restart_stderr = restart_result.get('StandardErrorContent', '').strip()
-
-                print(f"Restart command status: {restart_status}")
-                print(f"STDOUT: {restart_stdout}")
-                print(f"STDERR: {restart_stderr}")
-
-                if restart_status == 'Success':
-                    return {
-                        "status": "restart_succeeded",
-                        "platform": platform,
-                        "instance_id": instance_id,
-                        "restart_command_id": restart_command_id,
-                        "output": restart_stdout
-                    }
-                else:
-                    return {
-                        "status": "restart_failed",
-                        "platform": platform,
-                        "instance_id": instance_id,
-                        "restart_command_id": restart_command_id,
-                        "restart_status": restart_status,
-                        "stdout": restart_stdout,
-                        "stderr": restart_stderr
-                    }
-
-            except Exception as e:
-                return {
-                    "status": "error",
-                    "message": f"Could not get restart command result: {str(e)}",
-                    "restart_command_id": restart_command_id
-                }
-
         else:
             return {
-                "status": "running",
-                "platform": platform,
-                "instance_id": instance_id,
-                "output": check_stdout
+                "status": "setup_failed",
+                "message": "Failed to create restart task.",
+                "stdout": setup_result.get('StandardOutputContent', ''),
+                "stderr": setup_result.get('StandardErrorContent', ''),
+                "instance_id": instance_id
             }
 
-    except ssm.exceptions.InvalidInstanceId as e:
-        return {"status": "error", "message": f"Invalid instance ID: {str(e)}"}
     except Exception as e:
-        return {"status": "error", "message": f"Unexpected error: {str(e)}"}
+        return {
+            "status": "error",
+            "message": f"Error while deploying scheduled task: {str(e)}",
+            "instance_id": instance_id
+        }
