@@ -1,46 +1,55 @@
-import subprocess
+import boto3
 import time
-import logging
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-def is_ssm_agent_running():
-    try:
-        status = subprocess.check_output(["systemctl", "is-active", "amazon-ssm-agent"])
-        return status.strip() == b"active"
-    except subprocess.CalledProcessError:
-        return False
-
-def restart_ssm_agent():
-    try:
-        subprocess.run(["sudo", "systemctl", "restart", "amazon-ssm-agent"], check=True)
-        logger.info("SSM Agent restart command issued.")
-        time.sleep(2)
-        if is_ssm_agent_running():
-            logger.info("SSM Agent restarted and is now running.")
-            return {"status": "restarted"}
-        else:
-            logger.error("SSM Agent did not restart successfully.")
-            return {"status": "restart_failed"}
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to restart SSM Agent: {e}")
-        return {"status": "error", "details": str(e)}
+ssm = boto3.client('ssm')
 
 def lambda_handler(event, context):
-    instance_id = event.get("InstanceId")
-
+    instance_id = event.get('InstanceId')
     if not instance_id:
-        return {"status": "error", "message": "InstanceId is required in the event"}
+        return {"status": "error", "message": "InstanceId not provided in the event"}
 
-    logger.info(f"Processing request for instance: {instance_id}")
+    print(f"Checking SSM Agent status on instance: {instance_id}")
 
-    if not is_ssm_agent_running():
-        logger.warning("SSM Agent is not running. Attempting restart...")
-        result = restart_ssm_agent()
+    # 1. Run command to check SSM Agent status
+    check_command = "sudo systemctl is-active amazon-ssm-agent || echo 'inactive'"
+    check_response = ssm.send_command(
+        InstanceIds=[instance_id],
+        DocumentName="AWS-RunShellScript",
+        Parameters={'commands': [check_command]},
+        TimeoutSeconds=30
+    )
+
+    command_id = check_response['Command']['CommandId']
+    
+    # Wait briefly before getting the result
+    time.sleep(2)
+
+    # 2. Get command output
+    output = ssm.get_command_invocation(
+        CommandId=command_id,
+        InstanceId=instance_id
+    )
+
+    status_output = output.get('StandardOutputContent', '').strip()
+    print(f"SSM Agent status output: {status_output}")
+
+    # 3. Restart if not active
+    if status_output != 'active':
+        print("SSM Agent is not active. Attempting to restart...")
+        restart_response = ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={'commands': ['sudo systemctl restart amazon-ssm-agent']},
+            TimeoutSeconds=30
+        )
+        return {
+            "status": "restarted",
+            "instance_id": instance_id,
+            "restart_command_id": restart_response['Command']['CommandId']
+        }
     else:
-        logger.info("SSM Agent is running.")
-        result = {"status": "running"}
-
-    result["instance_id"] = instance_id
-    return result
+        print("SSM Agent is already active.")
+        return {
+            "status": "active",
+            "instance_id": instance_id
+        }
