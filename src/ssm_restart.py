@@ -54,7 +54,7 @@ def lambda_handler(event, context):
         status_output = invocation.get('StandardOutputContent', '').strip().lower()
         command_status = invocation.get('Status')
 
-        print(f"Command status: {command_status}")
+        print(f"Check command status: {command_status}")
         print(f"SSM Agent status output: {status_output}")
 
         if command_status in ['DeliveryTimedOut', 'Undeliverable', 'Terminated']:
@@ -67,6 +67,7 @@ def lambda_handler(event, context):
         # 5. Restart if not running
         if 'running' not in status_output and 'active' not in status_output:
             print("SSM Agent is not active. Attempting restart...")
+
             restart_response = ssm.send_command(
                 InstanceIds=[instance_id],
                 DocumentName=document,
@@ -74,12 +75,44 @@ def lambda_handler(event, context):
                 TimeoutSeconds=30
             )
 
-            return {
-                "status": "restarted",
-                "platform": platform,
-                "instance_id": instance_id,
-                "restart_command_id": restart_response['Command']['CommandId']
-            }
+            restart_command_id = restart_response['Command']['CommandId']
+            time.sleep(3)
+
+            try:
+                restart_result = ssm.get_command_invocation(
+                    CommandId=restart_command_id,
+                    InstanceId=instance_id
+                )
+
+                restart_status = restart_result['Status']
+                print(f"Restart command status: {restart_status}")
+
+                if restart_status == 'Success':
+                    return {
+                        "status": "restart_succeeded",
+                        "platform": platform,
+                        "instance_id": instance_id,
+                        "restart_command_id": restart_command_id
+                    }
+                else:
+                    return {
+                        "status": "restart_failed",
+                        "platform": platform,
+                        "instance_id": instance_id,
+                        "restart_command_id": restart_command_id,
+                        "error": restart_result.get('StandardErrorContent', 'Unknown error'),
+                        "output": restart_result.get('StandardOutputContent', '')
+                    }
+
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "message": f"Failed to get restart command result: {str(e)}",
+                    "platform": platform,
+                    "instance_id": instance_id,
+                    "restart_command_id": restart_command_id
+                }
+
         else:
             return {
                 "status": "running",
