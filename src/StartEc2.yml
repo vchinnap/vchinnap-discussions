@@ -1,0 +1,12 @@
+- name: Stop EC2 Instance using SSM Automation
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Stop EC2 using AWS-StopEC2Instance automation document
+      amazon.aws.aws_ssm:
+        region: us-east-1
+        document_name: AWS-StopEC2Instance
+        document_type: Automation
+        parameters:
+          InstanceId: ["i-0abc1234def567890"]   # Replace with your actual instance ID
