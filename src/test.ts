@@ -260,3 +260,19 @@ const parameters = {
   "configRuleName": { StaticValue: { Values: [ruleName] } },
   "complianceType": { StaticValue: { Values: [complianceType] } },
 };
+const stage = process.env.stage;
+const id = process.env.id;
+
+const prodAllowedIds = ["1", "2", "3", "4", "5"];
+const alwaysRunStages = ["shr", "net", "sec", "ops"];
+
+// Determine if the action should be executed
+const shouldDoSomething =
+  stage !== "prod" || prodAllowedIds.includes(id ?? "") || alwaysRunStages.includes(stage);
+
+if (shouldDoSomething) {
+  console.log(`Running step for stage=${stage}, id=${id}`);
+  // e.g., deploy resource, apply config, etc.
+} else {
+  console.log(`Skipping step for stage=prod with disallowed id=${id}`);
+}
