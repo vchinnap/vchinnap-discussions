@@ -9,28 +9,37 @@ def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
 
-    # Get all EC2s tagged with ConfigRule=True
+    # Get EC2s tagged with ConfigRule=True
     response = ec2.describe_instances(
-        Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
+        Filters=[
+            {'Name': 'tag:ConfigRule', 'Values': ['True']},
+            {'Name': 'instance-state-name', 'Values': ['running']}
+        ]
     )
-
-    # Fetch all protected resources from backup
-    protected_resources = set()
-    paginator = backup.get_paginator('list_protected_resources')
-    for page in paginator.paginate(ResourceType='EC2'):
-        for resource in page['Results']:
-            protected_resources.add(resource['ResourceArn'])
 
     for reservation in response['Reservations']:
         for instance in reservation['Instances']:
             instance_id = instance['InstanceId']
             timestamp = instance['LaunchTime']
-            instance_arn = f"arn:aws:ec2:{ec2.meta.region_name}:{instance['OwnerId']}:instance/{instance_id}"
+            region = ec2.meta.region_name
+            account_id = instance['OwnerId']
+            instance_arn = f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
 
             compliance_type = 'NON_COMPLIANT'
             annotation = "EC2 instance is not protected by any backup plan"
 
-            if instance_arn in protected_resources:
+            # Efficient per-instance check using paginator
+            protected = False
+            paginator = backup.get_paginator('list_protected_resources')
+            for page in paginator.paginate(ResourceType='EC2'):
+                for resource in page['Results']:
+                    if resource['ResourceArn'] == instance_arn:
+                        protected = True
+                        break
+                if protected:
+                    break
+
+            if protected:
                 compliance_type = 'COMPLIANT'
                 annotation = "EC2 instance is protected by a backup plan"
 
