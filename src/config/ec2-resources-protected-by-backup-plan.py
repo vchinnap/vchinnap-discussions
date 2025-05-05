@@ -9,39 +9,31 @@ def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
 
-    # Get EC2s tagged with ConfigRule=True
+    # Get all protected EC2 instance ARNs from backup
+    protected_instance_ids = set()
+    paginator = backup.get_paginator('list_protected_resources')
+    for page in paginator.paginate(ResourceType='EC2'):
+        for resource in page['Results']:
+            # ARN format: arn:aws:ec2:<region>:<account>:instance/<instance-id>
+            instance_id = resource['ResourceArn'].split('/')[-1]
+            protected_instance_ids.add(instance_id)
+
+    # Get EC2 instances tagged with ConfigRule=True
     response = ec2.describe_instances(
-        Filters=[
-            {'Name': 'tag:ConfigRule', 'Values': ['True']},
-            {'Name': 'instance-state-name', 'Values': ['running']}
-        ]
+        Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
     )
 
     for reservation in response['Reservations']:
         for instance in reservation['Instances']:
             instance_id = instance['InstanceId']
             timestamp = instance['LaunchTime']
-            region = ec2.meta.region_name
-            account_id = instance['OwnerId']
-            instance_arn = f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
 
-            compliance_type = 'NON_COMPLIANT'
-            annotation = "EC2 instance is not protected by any backup plan"
-
-            # Efficient per-instance check using paginator
-            protected = False
-            paginator = backup.get_paginator('list_protected_resources')
-            for page in paginator.paginate(ResourceType='EC2'):
-                for resource in page['Results']:
-                    if resource['ResourceArn'] == instance_arn:
-                        protected = True
-                        break
-                if protected:
-                    break
-
-            if protected:
+            if instance_id in protected_instance_ids:
                 compliance_type = 'COMPLIANT'
                 annotation = "EC2 instance is protected by a backup plan"
+            else:
+                compliance_type = 'NON_COMPLIANT'
+                annotation = "EC2 instance is NOT protected by any backup plan"
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::EC2::Instance',
@@ -51,6 +43,7 @@ def lambda_handler(event, context):
                 'OrderingTimestamp': timestamp
             })
 
+    # Submit to AWS Config
     if result_token != 'TESTMODE' and evaluations:
         config.put_evaluations(
             Evaluations=evaluations,
