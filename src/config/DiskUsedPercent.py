@@ -109,7 +109,6 @@ def lambda_handler(event, context):
 
 
 
-
 import boto3
 from datetime import datetime, timezone
 
