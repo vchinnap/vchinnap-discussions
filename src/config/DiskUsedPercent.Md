@@ -20,10 +20,8 @@ Ensure EC2 instances (with `ConfigRule=True` tag) have CloudWatch alarms for dis
 
 - Filters EC2 instances by the tag `ConfigRule=True`.
 - Determines Linux flavor from `PlatformDetails`.
-- Looks for CloudWatch alarms on required paths using `disk_used_percent`.
-- Marks instance:
-  - **COMPLIANT** if all alarms are present.
-  - **NON_COMPLIANT** if any are missing, with detailed annotation.
+- Searches for **CloudWatch alarms** using the `disk_used_percent` metric name and expected path dimensions.
+- ⚠️ **Note**: This rule only verifies the presence of alarms. It does **not** check whether the underlying `disk_used_percent` metric is being actively pushed or contains recent data.
 
 ## 🧪 Annotation Examples
 
