@@ -20,18 +20,18 @@ def lambda_handler(event, context):
             instance_id = instance['InstanceId']
             timestamp = instance['LaunchTime']
 
-            # Default state: non-compliant
+            # Default state
             compliance_type = 'NON_COMPLIANT'
             annotation = "Missing or incorrect snapshot_required tag"
+            root_volume_id = None
 
-            # Check snapshot_required tag
+            # Extract tag values
             tags = {tag['Key']: tag['Value'].lower() for tag in instance.get('Tags', [])}
             snapshot_required = tags.get('snapshot_required', '')
 
             if snapshot_required == 'yes':
                 root_device_name = instance.get('RootDeviceName')
                 block_devices = instance.get('BlockDeviceMappings', [])
-                root_volume_id = None
 
                 for device in block_devices:
                     if device['DeviceName'] == root_device_name and 'Ebs' in device:
@@ -50,15 +50,18 @@ def lambda_handler(event, context):
 
                         if latest_snapshot['StartTime'] >= now - timedelta(days=1):
                             compliance_type = 'COMPLIANT'
-                            annotation = f"Snapshot found: {latest_snapshot['SnapshotId']} on {latest_snapshot['StartTime']}"
+                            annotation = (
+                                f"Snapshot found for root volume {root_volume_id}: "
+                                f"{latest_snapshot['SnapshotId']} on {latest_snapshot['StartTime']}"
+                            )
                         else:
                             annotation = f"No recent snapshot for root volume {root_volume_id}"
                     else:
                         annotation = f"No snapshots found for root volume {root_volume_id}"
                 else:
-                    annotation = f"Could not find root volume for instance {instance_id}"
+                    annotation = f"Could not identify root volume for instance {instance_id}"
             else:
-                annotation = f"Tag 'snapshot_required' is missing or not 'yes'"
+                annotation = f"Tag 'snapshot_required' is missing or not set to 'yes' (Root volume: {root_volume_id or 'unknown'})"
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::EC2::Instance',
