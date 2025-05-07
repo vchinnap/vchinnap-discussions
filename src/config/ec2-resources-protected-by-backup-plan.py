@@ -20,24 +20,31 @@ def lambda_handler(event, context):
             instance_id = instance['InstanceId']
             timestamp = instance['LaunchTime']
 
-            # Default state
             compliance_type = 'NON_COMPLIANT'
-            annotation = "Missing or incorrect snapshot_required tag"
+            annotation = ''
             root_volume_id = None
 
-            # Extract tag values
-            tags = {tag['Key']: tag['Value'].lower() for tag in instance.get('Tags', [])}
-            snapshot_required = tags.get('snapshot_required', '')
+            # Get tags and root volume info early
+            tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+            snapshot_required_tag = tags.get('snapshot_required')
 
-            if snapshot_required == 'yes':
-                root_device_name = instance.get('RootDeviceName')
-                block_devices = instance.get('BlockDeviceMappings', [])
+            root_device_name = instance.get('RootDeviceName')
+            block_devices = instance.get('BlockDeviceMappings', [])
+            for device in block_devices:
+                if device['DeviceName'] == root_device_name and 'Ebs' in device:
+                    root_volume_id = device['Ebs']['VolumeId']
+                    break
 
-                for device in block_devices:
-                    if device['DeviceName'] == root_device_name and 'Ebs' in device:
-                        root_volume_id = device['Ebs']['VolumeId']
-                        break
-
+            if snapshot_required_tag is None:
+                annotation = (
+                    f"Tag 'snapshot_required' is missing (Root volume: {root_volume_id or 'not found'})"
+                )
+            elif snapshot_required_tag != 'Yes':
+                annotation = (
+                    f"Tag 'snapshot_required' is not set to 'Yes' "
+                    f"(Found: '{snapshot_required_tag}'; Root volume: {root_volume_id or 'not found'})"
+                )
+            else:
                 if root_volume_id:
                     snapshots = ec2.describe_snapshots(
                         Filters=[{'Name': 'volume-id', 'Values': [root_volume_id]}],
@@ -59,9 +66,7 @@ def lambda_handler(event, context):
                     else:
                         annotation = f"No snapshots found for root volume {root_volume_id}"
                 else:
-                    annotation = f"Could not identify root volume for instance {instance_id}"
-            else:
-                annotation = f"Tag 'snapshot_required' is missing or not set to 'yes' (Root volume: {root_volume_id or 'unknown'})"
+                    annotation = f"Root volume not found for instance {instance_id}"
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::EC2::Instance',
