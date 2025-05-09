@@ -1,28 +1,24 @@
 {
-  "schemaVersion": "0.3",
-  "description": "Sets the 'snapshot_required' tag to 'Yes' on the specified EC2 instance.",
-  "assumeRole": "{{ AutomationAssumeRole }}",
+  "schemaVersion": "2.2",
+  "description": "Adds or updates the EC2 instance tag 'snapshot_required' to 'Yes'.",
   "parameters": {
-    "AutomationAssumeRole": {
-      "description": "(Optional) The ARN of the IAM role that allows automation to perform actions.",
-      "type": "String"
-    },
     "InstanceId": {
-      "description": "(Required) The ID of the EC2 instance.",
-      "type": "String"
+      "type": "String",
+      "description": "(Required) EC2 Instance ID"
+    },
+    "automationAssumeRole": {
+      "type": "String",
+      "description": "(Required) The ARN of the role that allows Automation to perform the actions on your behalf."
     }
   },
   "mainSteps": [
     {
-      "name": "TagInstanceSnapshotRequired",
+      "name": "updateSnapshotTag",
       "action": "aws:executeAwsApi",
       "inputs": {
         "Service": "ec2",
         "Api": "CreateTags",
-        "ResourceType": "instance",
-        "ResourceIds": [
-          "{{ InstanceId }}"
-        ],
+        "Resources": ["{{ InstanceId }}"],
         "Tags": [
           {
             "Key": "snapshot_required",
