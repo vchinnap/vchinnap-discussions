@@ -20,7 +20,10 @@
       "inputs": {
         "Runtime": "python3.8",
         "Handler": "script_handler",
-        "Script": "def script_handler(events, context):\n    import boto3\n    ec2 = boto3.client('ec2')\n    instance_id = events['InstanceId']\n\n    ec2.create_tags(\n        Resources=[instance_id],\n        Tags=[{'Key': 'snapshot_required', 'Value': 'Yes'}]\n    )\n    return {'status': 'Tag snapshot_required=Yes applied to ' + instance_id}"
+        "Script": "def script_handler(events, context):\n    import boto3\n    ec2 = boto3.client('ec2')\n    instance_id = events['InstanceId']\n    ec2.create_tags(\n        Resources=[instance_id],\n        Tags=[{'Key': 'snapshot_required', 'Value': 'Yes'}]\n    )\n    return {'status': f'Tag snapshot_required=Yes applied to {instance_id}'}",
+        "InputPayload": {
+          "InstanceId": "{{ InstanceId }}"
+        }
       }
     }
   ]
