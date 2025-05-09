@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Adds or updates the EC2 instance tag 'snapshot_required' to 'Yes'.",
+  "parameters": {
+    "InstanceId": {
+      "type": "String",
+      "description": "(Required) EC2 Instance ID"
+    },
+    "automationAssumeRole": {
+      "type": "String",
+      "description": "(Required) The ARN of the role that allows Automation to perform the actions on your behalf."
+    }
+  },
+  "mainSteps": [
+    {
+      "name": "updateSnapshotTag",
+      "action": "aws:executeAwsApi",
+      "inputs": {
+        "Service": "ec2",
+        "Api": "CreateTags",
+        "ResourceType": "instance",
+        "ResourceIds": ["{{ InstanceId }}"],
+        "Tags": [
+          {
+            "Key": "snapshot_required",
+            "Value": "Yes"
+          }
+        ]
+      }
+    }
+  ]
+}
