@@ -1,0 +1,20 @@
+schemaVersion: '0.3'
+description: "Delete a single AWS Config rule"
+assumeRole: "{{ AutomationAssumeRole }}"
+
+parameters:
+  ConfigRuleName:
+    type: String
+    description: "(Required) The name of the AWS Config rule to delete"
+  AutomationAssumeRole:
+    type: String
+    description: "(Required) IAM role ARN with permission to delete AWS Config rules"
+
+mainSteps:
+  - name: deleteConfigRule
+    action: aws:executeAwsApi
+    isEnd: true
+    inputs:
+      Service: config
+      Api: DeleteConfigRule
+      ConfigRuleName: "{{ ConfigRuleName }}"
