@@ -9,3 +9,14 @@ export class ContextUtils {
     return commitId;
   }
 }
+
+
+const stage = process.env.Stage;
+const id = process.env.AccountIdentifier;
+
+const validStages = ["prod", "sbx"];
+const validIds = ["1", "2", "3"];
+
+if ((validStages.includes(stage) && validIds.includes(id)) || stage === "shr" || stage === "ops") {
+  stack = new vindstack();
+}
