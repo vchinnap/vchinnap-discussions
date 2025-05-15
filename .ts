@@ -20,3 +20,27 @@ const validIds = ["1", "2", "3"];
 if ((validStages.includes(stage) && validIds.includes(id)) || stage === "shr" || stage === "ops") {
   stack = new vindstack();
 }
+
+
+
+
+
+
+const originalRuleName = 'OPS-ConfigRule-EC2-Resources-Protected-By-Backup-Plan';
+
+// Remove "OPS" and "ConfigRule"
+const trimmedRuleName = originalRuleName
+  .replace('OPS-', '')
+  .replace('ConfigRule-', '')
+  .replace('CR-', ''); // optional in case it's abbreviated
+
+// Construct Lambda function name
+const lambdaFnName = `${trimmedRuleName}-LambdaFn`;
+
+// Optionally check length
+if (lambdaFnName.length > 64) {
+  throw new Error(`Lambda function name too long: ${lambdaFnName.length} chars`);
+}
+
+export const ruleName = originalRuleName;
+export const automationLambdaFnName = lambdaFnName;
