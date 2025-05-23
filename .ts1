@@ -1,0 +1,36 @@
+import * as cdk from 'aws-cdk-lib';
+import { Stack, StackProps, Tags } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as config from 'aws-cdk-lib/aws-config';
+
+export class TaggedConfigRuleStack extends Stack {
+  constructor(scope: Construct, id: string, props?: StackProps) {
+    super(scope, id, props);
+
+    new config.CfnConfigRule(this, 'MyTaggedConfigRule', {
+      configRuleName: 's3-bucket-public-read-prohibited',
+      source: {
+        owner: 'AWS',
+        sourceIdentifier: 'S3_BUCKET_PUBLIC_READ_PROHIBITED',
+      },
+      scope: {
+        complianceResourceTypes: ['AWS::S3::Bucket'],
+      },
+      inputParameters: {
+        // Only needed if the rule has parameters
+      },
+      description: 'Ensures S3 buckets do not allow public read access',
+      maximumExecutionFrequency: 'TwentyFour_Hours',
+      tags: [
+        {
+          key: 'Environment',
+          value: 'Production',
+        },
+        {
+          key: 'Team',
+          value: 'CloudOps',
+        },
+      ],
+    });
+  }
+}
