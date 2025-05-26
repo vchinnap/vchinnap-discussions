@@ -29,8 +29,8 @@ export class Ec2ResourcesProtectedByBackupPlan extends cdk.Stack {
       )
     );
 
-    const hcsAutomationAssumeRole = `arn:aws:iam::${accountID}:role/HPS-AWS-AutomationRole`;
-    const bmcAutomationAssumeRole = `arn:aws:iam::${accountID}:role/bhc-aws-AutomationRole`;
+    const hcopsAutomationAssumeRole = `arn:aws:iam::${accountID}:role/HCOPS-AWS-AutomationRole`;
+    const bmohcAutomationAssumeRole = `arn:aws:iam::${accountID}:role/bmohc-aws-AutomationRole`;
 
     const evaluationLambda = new BLambdaConstruct(this, ruleName + '-ConfigLambda', {
       functionName: ruleName,
@@ -62,6 +62,12 @@ export class Ec2ResourcesProtectedByBackupPlan extends cdk.Stack {
 
     const configRuleArn = configRule.configRuleArn;
 
+    // ✅ Use reduce() instead of Object.fromEntries for environment variables
+    const tagEnvVars = Object.entries(taggingVars).reduce((acc, [k, v]) => {
+      acc[`TAG_${k}`] = v;
+      return acc;
+    }, {} as Record<string, string>);
+
     const taggingLambda = new BLambdaConstruct(this, ruleName + '-TagLambda', {
       functionName: ruleName + '-tagger',
       functionRelativePath: '../service/lambda-functions/tagging',
@@ -77,9 +83,7 @@ export class Ec2ResourcesProtectedByBackupPlan extends cdk.Stack {
       lambdaLogRetentionInDays: 7,
       environmentVariables: {
         CONFIG_RULE_ARN: configRuleArn,
-        ...Object.fromEntries(
-          Object.entries(taggingVars).map(([k, v]) => [`TAG_${k}`, v])
-        )
+        ...tagEnvVars
       }
     });
 
