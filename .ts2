@@ -271,3 +271,44 @@ export class Ec2ResourcesProtectedByBackupPlan extends cdk.Stack {
     configRemediation.node.addDependency(this.ssmDocumentName);
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+// Step 1: Create sanitized env vars and a mapping
+const sanitizedEnvVars: Record<string, string> = {};
+const tagKeyMap: Record<string, string> = {};
+
+Object.entries(taggingVars).forEach(([originalKey, value], index) => {
+  const envKey = `TAG_KEY_${index + 1}`;
+  sanitizedEnvVars[envKey] = value;
+  tagKeyMap[envKey] = originalKey;
+});
+
+// Step 2: Pass to your Lambda
+const taggingLambda = new BLambdaConstruct(this, ruleName + '-TagLambda', {
+  functionName: ruleName + '-tagger',
+  functionRelativePath: '../service/lambda-functions/tagging',
+  handler: 'index.lambda_handler',
+  runtime: 'python3.12',
+  tags: taggingVars,
+  timeout: 60,
+  dynatraceConfig: false,
+  existingRoleArn: taggingRoleArn,
+  lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountId}:alias/${kmsKeyAlias}`,
+  subnetIds,
+  securityGroupIds,
+  lambdaLogRetentionInDays: 7,
+  environmentVariables: {
+    CONFIG_RULE_ARN: configRuleArn,
+    TAG_KEY_MAP: JSON.stringify(tagKeyMap),
+    ...sanitizedEnvVars
+  }
+});
