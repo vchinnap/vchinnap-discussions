@@ -1,0 +1,22 @@
+description: "Deletes an AWS Lambda function by name"
+schemaVersion: '0.3'
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  FunctionName:
+    type: String
+    description: '(Required) The name of the Lambda function to delete.'
+  Region:
+    type: String
+    default: 'us-east-1'
+  AutomationAssumeRole:
+    type: String
+    description: 'The ARN of the role that allows Automation to perform the action.'
+
+mainSteps:
+  - name: deleteLambda
+    action: aws:executeAwsApi
+    inputs:
+      Service: lambda
+      Api: DeleteFunction
+      FunctionName: '{{ FunctionName }}'
+      Region: '{{ Region }}'
