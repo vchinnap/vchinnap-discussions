@@ -14,6 +14,12 @@ interface RemediationDocInput {
   parameters: Record<string, any>;
 }
 
+interface RawScopeInput {
+  tagKey?: string;
+  tagValue?: string;
+  complianceResourceTypes?: string[];
+}
+
 interface ConfigRuleWithRemediationProps {
   ruleName: string;
   description: string;
@@ -23,7 +29,7 @@ interface ConfigRuleWithRemediationProps {
   evaluationPath?: string;
   remediationDocs: RemediationDocInput;
   remediationRoleArn: string;
-  configRuleScope?: config.RuleScope;
+  rawScope?: RawScopeInput;
   tags: Record<string, string>;
   region: string;
   accountId: string;
@@ -52,7 +58,7 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       evaluationPath,
       remediationDocs,
       remediationRoleArn,
-      configRuleScope,
+      rawScope,
       tags,
       region,
       accountId,
@@ -65,6 +71,18 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       inputParameters,
       maxFrequency
     } = props;
+
+    const resolvedScope = (() => {
+      if (rawScope?.tagKey && rawScope?.tagValue) {
+        return config.RuleScope.fromTag(rawScope.tagKey, rawScope.tagValue);
+      } else if (rawScope?.complianceResourceTypes) {
+        return config.RuleScope.fromResources(
+          rawScope.complianceResourceTypes.map(t => t as config.ResourceType)
+        );
+      } else {
+        return config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE);
+      }
+    })();
 
     let configRule;
 
@@ -90,20 +108,25 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         periodic: true,
         maximumExecutionFrequency: config.MaximumExecutionFrequency.ONE_HOUR,
         lambdaFunction: this.evaluationLambda.lambdaFunction,
-        ruleScope: configRuleScope ?? config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE)
+        ruleScope: resolvedScope
       });
     } else {
-      configRule = new config.ManagedRule(this, `${ruleName}-ConfigRule`, {
+      configRule = new config.CfnConfigRule(this, `${ruleName}-ConfigRule`, {
         configRuleName: ruleName,
+        source: {
+          owner: 'AWS',
+          sourceIdentifier: sourceIdentifier!
+        },
         description,
-        identifier: sourceIdentifier!,
-        ruleScope: configRuleScope ?? config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE),
-        inputParameters,
-        maximumExecutionFrequency: maxFrequency ?? config.MaximumExecutionFrequency.TWENTY_FOUR_HOURS
+        scope: rawScope?.tagKey && rawScope?.tagValue
+          ? { tagKey: rawScope.tagKey, tagValue: rawScope.tagValue }
+          : rawScope?.complianceResourceTypes
+            ? { complianceResourceTypes: rawScope.complianceResourceTypes }
+            : undefined
       });
     }
 
-    const configRuleArn = configRule.configRuleArn;
+    const configRuleArn = (configRule as any).attrArn ?? (configRule as any).configRuleArn;
 
     const taggingLambda = new BLambdaConstruct(this, `${ruleName}-TagLambda`, {
       functionName: `${ruleName}-tagger`,
