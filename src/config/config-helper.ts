@@ -37,6 +37,7 @@ interface ConfigRuleWithRemediationProps {
 
 export class ConfigRuleWithRemediationConstruct extends Construct {
   private readonly evaluationLambda: BLambdaConstruct;
+  private readonly ssmDocument: BSSMDocumentsConstruct;
   constructor(scope: Construct, id: string, props: ConfigRuleWithRemediationProps) {
     super(scope, id);
 
@@ -124,11 +125,14 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
     });
 
     // 3. SSM Remediation Documents and Config Remediations
-      const docContent = JSON.parse(
-        fs.readFileSync(path.resolve(__dirname, remediationDocs.path), 'utf8')
-      );
+      const projectRoot = path.resolve(__dirname, '..', '..', '..');
+      const fullRemediationPath = path.resolve(projectRoot, remediationDocs.path);
+      if(!fs.existSync(fullRemediationPath)) {
+        throw new Error('remeidiation not found in path');
+      }
+      const docContent = JSON.parse(fs.readFileSync(fullRemediationPath, 'utf8'));
 
-      const ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc`, {
+      this.ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc`, {
         content: docContent,
         documentFormat: 'JSON',
         documentType: remediationDocs.documentType,
@@ -137,7 +141,7 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         tags
       });
 
-      new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation}`, {
+      const cofigRemediation = new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation}`, {
         configRuleName: ruleName,
         targetId: `${ruleName}-ssm`,
         targetType: 'SSM_DOCUMENT',
@@ -153,5 +157,7 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         retryAttemptSeconds: 300,
         targetVersion: '1'
       });
+
+      cofigRemediation.node.addDependency(this.ssmDocument);
   }
 }
