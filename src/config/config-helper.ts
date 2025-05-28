@@ -111,26 +111,17 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         ruleScope: resolvedScope
       });
     } else {
-      configRule = new config.CfnConfigRule(this, `${ruleName}-ConfigRule`, {
+      configRule = new config.ManagedRule(this, `${ruleName}-ConfigRule`, {
         configRuleName: ruleName,
         source: {
           owner: 'AWS',
-          sourceIdentifier: sourceIdentifier!
+          sourceIdentifier: sourceIdentifier
         },
         description,
-        scope: rawScope?.tagKey && rawScope?.tagValue
-          ? { tagKey: rawScope.tagKey, tagValue: rawScope.tagValue }
-          : rawScope?.complianceResourceTypes
-            ? { complianceResourceTypes: rawScope.complianceResourceTypes }
-            : undefined
       });
     }
-    if(type=='custom'){
-      const configRuleArn = configRule.configRuleArn;
-    }
-    if(type=='managed'){
-    const configRuleArn1 = `arn:aws:config:${region}:${accountId}:config-rule/${(configRule as cdk.CfnResource).ref}`;
-    }
+
+    const configRuleArn = (configRule as any).attrArn ?? (configRule as any).configRuleArn;
 
     const taggingLambda = new BLambdaConstruct(this, `${ruleName}-TagLambda`, {
       functionName: `${ruleName}-tagger`,

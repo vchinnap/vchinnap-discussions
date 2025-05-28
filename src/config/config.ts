@@ -7,6 +7,12 @@ import * as path from 'path';
 import { BLambdaConstruct } from '@bmo-cdk/lambdafunction';
 import { BSSMDocumentsConstruct } from '@bmo-cdk/ssm-documents';
 
+
+maximumExecutionFrequency: type === 'custom' || periodicManagedRuleIdentifiers.includes(sourceIdentifier!)
+  ? maxFrequency ?? config.MaximumExecutionFrequency.TWENTY_FOUR_HOURS
+  : undefined
+
+
 interface RemediationDocInput {
   path: string;
   documentType: 'Automation' | 'Command';
