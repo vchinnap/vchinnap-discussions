@@ -21,7 +21,7 @@ interface ConfigRuleWithRemediationProps {
   sourceIdentifier?: string;
   evaluationHandler?: string;
   evaluationPath?: string;
-  remediationDocs: RemediationDocInput[];
+  remediationDocs: RemediationDocInput;
   remediationRoleArn: string;
   configRuleScope?: config.RuleScope;
   tags: Record<string, string>;
@@ -124,15 +124,14 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
     });
 
     // 3. SSM Remediation Documents and Config Remediations
-    remediationDocs.forEach((doc, idx) => {
       const docContent = JSON.parse(
-        fs.readFileSync(path.resolve(__dirname, doc.path), 'utf8')
+        fs.readFileSync(path.resolve(__dirname, remediationDocs.path), 'utf8')
       );
 
       const ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc`, {
         content: docContent,
         documentFormat: 'JSON',
-        documentType: doc.documentType,
+        documentType: remediationDocs.documentType,
         name: `${ruleName}-ssm`,
         updateMethod: 'NewVersion',
         tags
@@ -150,10 +149,9 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
           }
         },
         maximumAutomaticAttempts: 3,
-        parameters: doc.parameters,
+        parameters: remediationDocs.parameters,
         retryAttemptSeconds: 300,
         targetVersion: '1'
       });
-    });
   }
 }
