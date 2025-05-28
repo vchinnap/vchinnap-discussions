@@ -125,8 +125,12 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
             : undefined
       });
     }
-
-    const configRuleArn = (configRule as any).attrArn ?? (configRule as any).configRuleArn;
+    if(type=='custom'){
+      const configRuleArn = configRule.configRuleArn;
+    }
+    if(type=='managed'){
+    const configRuleArn1 = `arn:aws:config:${region}:${accountId}:config-rule/${(configRule as cdk.CfnResource).ref}`;
+    }
 
     const taggingLambda = new BLambdaConstruct(this, `${ruleName}-TagLambda`, {
       functionName: `${ruleName}-tagger`,
