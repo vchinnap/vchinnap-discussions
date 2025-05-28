@@ -36,6 +36,7 @@ interface ConfigRuleWithRemediationProps {
 }
 
 export class ConfigRuleWithRemediationConstruct extends Construct {
+  private readonly evaluationLambda: BLambdaConstruct;
   constructor(scope: Construct, id: string, props: ConfigRuleWithRemediationProps) {
     super(scope, id);
 
@@ -61,11 +62,11 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
     } = props;
 
     // 1. Evaluation Lambda (custom rule)
-    let evaluationLambda;
+
     let configRule;
 
     if (type === 'custom') {
-      evaluationLambda = new BLambdaConstruct(this, `${ruleName}-EvalLambda`, {
+      this.evaluationLambda = new BLambdaConstruct(this, `${ruleName}-EvalLambda`, {
         functionName: `${ruleName}-eval`,
         functionRelativePath: evaluationPath!,
         handler: evaluationHandler!,
@@ -85,7 +86,7 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         description,
         periodic: true,
         maximumExecutionFrequency: config.MaximumExecutionFrequency.ONE_HOUR,
-        lambdaFunction: evaluationLambda.lambdaFunction,
+        lambdaFunction: this.evaluationLambda.lambdaFunction,
         ruleScope: configRuleScope ?? config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE)
       });
     } else {
@@ -128,18 +129,18 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         fs.readFileSync(path.resolve(__dirname, doc.path), 'utf8')
       );
 
-      const ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc${idx + 1}`, {
+      const ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc`, {
         content: docContent,
         documentFormat: 'JSON',
         documentType: doc.documentType,
-        name: `${ruleName}-ssm-${idx + 1}`,
+        name: `${ruleName}-ssm`,
         updateMethod: 'NewVersion',
         tags
       });
 
-      new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation${idx + 1}`, {
+      new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation}`, {
         configRuleName: ruleName,
-        targetId: `${ruleName}-ssm-${idx + 1}`,
+        targetId: `${ruleName}-ssm`,
         targetType: 'SSM_DOCUMENT',
         automatic: false,
         executionControls: {
