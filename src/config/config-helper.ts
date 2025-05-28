@@ -33,6 +33,8 @@ interface ConfigRuleWithRemediationProps {
   taggingLambdaPath: string;
   taggingLambdaHandler: string;
   taggingRoleArn: string;
+  inputParameters?: Record<string, any>;
+  maxFrequency?: config.MaximumExecutionFrequency;
 }
 
 export class ConfigRuleWithRemediationConstruct extends Construct {
@@ -59,10 +61,10 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       kmsKeyAlias,
       taggingLambdaPath,
       taggingLambdaHandler,
-      taggingRoleArn
+      taggingRoleArn,
+      inputParameters,
+      maxFrequency
     } = props;
-
-    // 1. Evaluation Lambda (custom rule)
 
     let configRule;
 
@@ -95,13 +97,14 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         configRuleName: ruleName,
         description,
         identifier: sourceIdentifier!,
-        ruleScope: configRuleScope ?? config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE)
+        ruleScope: configRuleScope ?? config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE),
+        inputParameters,
+        maximumExecutionFrequency: maxFrequency ?? config.MaximumExecutionFrequency.TWENTY_FOUR_HOURS
       });
     }
 
     const configRuleArn = configRule.configRuleArn;
 
-    // 2. Tagging Lambda
     const taggingLambda = new BLambdaConstruct(this, `${ruleName}-TagLambda`, {
       functionName: `${ruleName}-tagger`,
       functionRelativePath: taggingLambdaPath,
@@ -124,40 +127,39 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       serviceToken: taggingLambda.lambdaFunction.functionArn
     });
 
-    // 3. SSM Remediation Documents and Config Remediations
-      const projectRoot = path.resolve(__dirname, '..', '..', '..');
-      const fullRemediationPath = path.resolve(projectRoot, remediationDocs.path);
-      if(!fs.existSync(fullRemediationPath)) {
-        throw new Error('remeidiation not found in path');
-      }
-      const docContent = JSON.parse(fs.readFileSync(fullRemediationPath, 'utf8'));
+    const projectRoot = path.resolve(__dirname, '..', '..', '..');
+    const fullRemediationPath = path.resolve(projectRoot, remediationDocs.path);
+    if (!fs.existsSync(fullRemediationPath)) {
+      throw new Error('Remediation not found in path');
+    }
+    const docContent = JSON.parse(fs.readFileSync(fullRemediationPath, 'utf8'));
 
-      this.ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc`, {
-        content: docContent,
-        documentFormat: 'JSON',
-        documentType: remediationDocs.documentType,
-        name: `${ruleName}-ssm`,
-        updateMethod: 'NewVersion',
-        tags
-      });
+    this.ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc`, {
+      content: docContent,
+      documentFormat: 'JSON',
+      documentType: remediationDocs.documentType,
+      name: `${ruleName}-ssm`,
+      updateMethod: 'NewVersion',
+      tags
+    });
 
-      const cofigRemediation = new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation}`, {
-        configRuleName: ruleName,
-        targetId: `${ruleName}-ssm`,
-        targetType: 'SSM_DOCUMENT',
-        automatic: false,
-        executionControls: {
-          ssmControls: {
-            concurrentExecutionRatePercentage: 50,
-            errorPercentage: 10
-          }
-        },
-        maximumAutomaticAttempts: 3,
-        parameters: remediationDocs.parameters,
-        retryAttemptSeconds: 300,
-        targetVersion: '1'
-      });
+    const configRemediation = new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation`, {
+      configRuleName: ruleName,
+      targetId: `${ruleName}-ssm`,
+      targetType: 'SSM_DOCUMENT',
+      automatic: false,
+      executionControls: {
+        ssmControls: {
+          concurrentExecutionRatePercentage: 50,
+          errorPercentage: 10
+        }
+      },
+      maximumAutomaticAttempts: 3,
+      parameters: remediationDocs.parameters,
+      retryAttemptSeconds: 300,
+      targetVersion: '1'
+    });
 
-      cofigRemediation.node.addDependency(this.ssmDocument);
+    configRemediation.node.addDependency(this.ssmDocument);
   }
 }
