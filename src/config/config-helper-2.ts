@@ -48,6 +48,7 @@ interface ConfigRuleWithRemediationProps {
   lambdaRoleArn: string;
   isPeriodic?: boolean;
   inputParameters?: Record<string, any>;
+  enableTagging?: boolean;
 }
 
 export class ConfigRuleWithRemediationConstruct extends Construct {
@@ -78,7 +79,8 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       taggingLambdaHandler,
       lambdaRoleArn,
       isPeriodic,
-      inputParameters
+      inputParameters,
+      enableTagging = true
     } = props;
 
     const ruleScope = props.configRuleScope ?? (() => {
@@ -112,13 +114,6 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         lambdaLogRetentionInDays: 7
       });
 
-      try {
-        const evalLogGroup = logs.LogGroup.fromLogGroupName(this, `${ruleName}-EvalLogGroup`, `/aws/lambda/${ruleName}`);
-        (evalLogGroup.node.defaultChild as cdk.CfnResource).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-      } catch (err) {
-        console.warn(`Eval log group not found for ${ruleName}`);
-      }
-
       const customRule = new config.CustomRule(this, `${ruleName}-ConfigRule`, {
         configRuleName: ruleName,
         description,
@@ -141,34 +136,35 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       configRuleArn = managedRule.configRuleArn;
     }
 
-    this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
-      functionName: functionRuleName,
-      functionRelativePath: taggingLambdaPath,
-      handler: taggingLambdaHandler,
-      runtime: 'python3.12',
-      tags,
-      timeout: 60,
-      dynatraceConfig: false,
-      existingRoleArn: lambdaRoleArn,
-      lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
-      subnetIds,
-      securityGroupIds,
-      lambdaLogRetentionInDays: 1,
-      environmentVariables: {
-        CONFIG_RULE_ARN: configRuleArn
-      }
-    });
+    if (enableTagging) {
+      new logs.LogGroup(this, `${ruleName}-TagLogGroup`, {
+        logGroupName: `/aws/lambda/${functionRuleName}`,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        retention: logs.RetentionDays.ONE_DAY
+      });
 
-    try {
-      const tagLogGroup = logs.LogGroup.fromLogGroupName(this, `${ruleName}-TagLogGroup`, `/aws/lambda/${functionRuleName}`);
-      (tagLogGroup.node.defaultChild as cdk.CfnResource).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    } catch (err) {
-      console.warn(`Tag log group not found for ${ruleName}`);
+      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
+        functionName: functionRuleName,
+        functionRelativePath: taggingLambdaPath,
+        handler: taggingLambdaHandler,
+        runtime: 'python3.12',
+        tags,
+        timeout: 60,
+        dynatraceConfig: false,
+        existingRoleArn: lambdaRoleArn,
+        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
+        subnetIds,
+        securityGroupIds,
+        lambdaLogRetentionInDays: undefined,
+        environmentVariables: {
+          CONFIG_RULE_ARN: configRuleArn
+        }
+      });
+
+      new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
+        serviceToken: this.taggingLambda.lambdaFunction.functionArn
+      });
     }
-
-    const configTagRule = new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
-      serviceToken: this.taggingLambda.lambdaFunction.functionArn
-    });
 
     const projectRoot = path.resolve(__dirname, '..', '..', '..');
     const fullRemediationPath = path.resolve(projectRoot, remediationDoc.path);
@@ -205,6 +201,5 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
     });
 
     configRemediation.node.addDependency(this.ssmDocument);
-    configTagRule.node.addDependency(this.taggingLambda);
   }
 }
