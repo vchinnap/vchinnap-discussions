@@ -2,10 +2,9 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
   aws_config as config,
-  Tags as ConfigTags,
-  custom_resources as cr,
   aws_logs as logs,
-  CustomResource
+  aws_events as events,
+  aws_events_targets as targets,
 } from 'aws-cdk-lib';
 
 import { OMBLambdaConstruct } from '@omb-cdk/lambdafunction';
@@ -122,80 +121,51 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       });
 
       configRuleArn = customRule.configRuleArn;
-
-      // ✅ Add CfnLogGroup to guarantee deletion on removal
-      new logs.CfnLogGroup(this, `${ruleName}-TagLogGroupCfn`, {
-        logGroupName: `/aws/lambda/${functionRuleName}`,
-        retentionInDays: 1
-      }).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-
-      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
-        functionName: functionRuleName,
-        functionRelativePath: taggingLambdaPath,
-        handler: taggingLambdaHandler,
-        runtime: 'python3.12',
-        tags,
-        timeout: 60,
-        dynatraceConfig: false,
-        existingRoleArn: lambdaRoleArn,
-        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
-        subnetIds,
-        securityGroupIds,
-        lambdaLogRetentionInDays: undefined,
-        environmentVariables: {
-          CONFIG_RULE_ARN: configRuleArn
-        }
-      });
-
-      const configTagRule = new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
-        serviceToken: this.taggingLambda.lambdaFunction.functionArn
-      });
-
-      configTagRule.node.addDependency(this.taggingLambda);
-      configTagRule.node.addDependency(customRule);
-    } else if (type === 'managed') {
+    } else {
       const managedRule = new config.ManagedRule(this, `${ruleName}-ConfigRule`, {
         configRuleName: ruleName,
         identifier: sourceIdentifier!,
         description,
-        ruleScope: ruleScope,
+        ruleScope,
         inputParameters
       });
 
       configRuleArn = managedRule.configRuleArn;
-
-      // ✅ Add CfnLogGroup to guarantee deletion on removal
-      new logs.CfnLogGroup(this, `${ruleName}-TagLogGroupCfn`, {
-        logGroupName: `/aws/lambda/${functionRuleName}`,
-        retentionInDays: 1
-      }).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-
-      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
-        functionName: functionRuleName,
-        functionRelativePath: taggingLambdaPath,
-        handler: taggingLambdaHandler,
-        runtime: 'python3.12',
-        tags,
-        timeout: 60,
-        dynatraceConfig: false,
-        existingRoleArn: lambdaRoleArn,
-        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
-        subnetIds,
-        securityGroupIds,
-        lambdaLogRetentionInDays: undefined,
-        environmentVariables: {
-          CONFIG_RULE_ARN: configRuleArn
-        }
-      });
-
-      const configTagRule = new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
-        serviceToken: this.taggingLambda.lambdaFunction.functionArn
-      });
-
-      configTagRule.node.addDependency(this.taggingLambda);
-      configTagRule.node.addDependency(managedRule);
     }
 
+    // ✅ Reusable tagging Lambda for both rule types
+    this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
+      functionName: functionRuleName,
+      functionRelativePath: taggingLambdaPath,
+      handler: taggingLambdaHandler,
+      runtime: 'python3.12',
+      tags,
+      timeout: 60,
+      dynatraceConfig: false,
+      existingRoleArn: lambdaRoleArn,
+      lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
+      subnetIds,
+      securityGroupIds,
+      lambdaLogRetentionInDays: 1,
+      environmentVariables: {
+        CONFIG_RULE_ARN: configRuleArn
+      }
+    });
+
+    // ✅ Replace CustomResource with EventBridge rule
+    new events.Rule(this, `${ruleName}-ConfigRuleTaggingEvent`, {
+      eventPattern: {
+        source: ['aws.config'],
+        detailType: ['AWS API Call via CloudTrail'],
+        detail: {
+          eventSource: ['config.amazonaws.com'],
+          eventName: ['PutConfigRule']
+        }
+      },
+      targets: [new targets.LambdaFunction(this.taggingLambda.lambdaFunction)]
+    });
+
+    // ✅ SSM Document setup
     const projectRoot = path.resolve(__dirname, '..', '..', '..');
     const fullRemediationPath = path.resolve(projectRoot, remediationDoc.path);
     if (!fs.existsSync(fullRemediationPath)) {
@@ -231,9 +201,5 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
     });
 
     configRemediation.node.addDependency(this.ssmDocument);
-
-     new logs.LogRetention(this, 'MyExistingLogGroupRetention', {
-      logGroupName: '/aws/lambda/my-existing-function',
-      retention: logs.RetentionDays.ONE_WEEK, 
   }
 }
