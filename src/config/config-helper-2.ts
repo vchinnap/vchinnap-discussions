@@ -231,5 +231,9 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
     });
 
     configRemediation.node.addDependency(this.ssmDocument);
+
+     new logs.LogRetention(this, 'MyExistingLogGroupRetention', {
+      logGroupName: '/aws/lambda/my-existing-function',
+      retention: logs.RetentionDays.ONE_WEEK, 
   }
 }
