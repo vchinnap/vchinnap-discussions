@@ -9,6 +9,19 @@ const documentContent = JSON.parse(
 );
 
 
+try {
+  const evalLogGroup = logs.LogGroup.fromLogGroupName(
+    this,
+    `${ruleName}-ImportedEvalLogGroup`,
+    `/aws/lambda/${ruleName}`
+  );
+  (evalLogGroup.node.defaultChild as cdk.CfnResource).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+} catch (err) {
+  console.warn(`Could not apply removalPolicy to evaluation log group: ${err}`);
+}
+
+
+
 /**
  * ╔══════════════════════════════════════════════╗
  * ║              CONFIG RULE LOGIC              ║
