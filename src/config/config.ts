@@ -1,17 +1,18 @@
-import { Construct } from 'constructs';
 import * as cdk from 'aws-cdk-lib';
-import { aws_config as config, CustomResource } from 'aws-cdk-lib';
-import * as iam from 'aws-cdk-lib/aws-iam';
+import { Construct } from 'constructs';
+import {
+  aws_config as config,
+  Tags as ConfigTags,
+  custom_resources as cr,
+  aws_logs as logs,
+  CustomResource
+} from 'aws-cdk-lib';
+
+import { OMBLambdaConstruct } from '@omb-cdk/lambdafunction';
+import { OMBSsmDocumentsConstruct } from '@omb-cdk/ssm-documents';
+
 import * as fs from 'fs';
 import * as path from 'path';
-import { BLambdaConstruct } from '@bmo-cdk/lambdafunction';
-import { BSSMDocumentsConstruct } from '@bmo-cdk/ssm-documents';
-
-
-maximumExecutionFrequency: type === 'custom' || periodicManagedRuleIdentifiers.includes(sourceIdentifier!)
-  ? maxFrequency ?? config.MaximumExecutionFrequency.TWENTY_FOUR_HOURS
-  : undefined
-
 
 interface RemediationDocInput {
   path: string;
@@ -19,11 +20,10 @@ interface RemediationDocInput {
   parameters: Record<string, any>;
 }
 
-interface CfnScope {
-  complianceResourceTypes?: string[];
+interface RawScopeInput {
   tagKey?: string;
   tagValue?: string;
-  complianceResourceId?: string;
+  complianceResourceTypes?: config.ResourceType[];
 }
 
 interface ConfigRuleWithRemediationProps {
@@ -33,24 +33,28 @@ interface ConfigRuleWithRemediationProps {
   sourceIdentifier?: string;
   evaluationHandler?: string;
   evaluationPath?: string;
-  periodic?: boolean;
-  maximumExecutionFrequency?: config.MaximumExecutionFrequency;
-  remediationDocs: RemediationDocInput[];
-  remediationRoleArn: string;
+  remediationDoc: RemediationDocInput;
+  rScope?: RawScopeInput;
   configRuleScope?: config.RuleScope;
-  cfnScope?: CfnScope;
+  maximumExecutionFrequency?: config.MaximumExecutionFrequency;
   tags: Record<string, string>;
   region: string;
-  accountId: string;
+  accountID: string;
   subnetIds: string[];
   securityGroupIds: string[];
-  kmsKeyAlias: string;
+  kmsEncryptionAliasID: string;
   taggingLambdaPath: string;
   taggingLambdaHandler: string;
-  taggingRoleArn: string;
+  lambdaRoleArn: string;
+  isPeriodic?: boolean;
+  inputParameters?: Record<string, any>;
 }
 
 export class ConfigRuleWithRemediationConstruct extends Construct {
+  private readonly evaluationLambda: OMBLambdaConstruct;
+  private readonly taggingLambda: OMBLambdaConstruct;
+  private readonly ssmDocument: OMBSsmDocumentsConstruct;
+
   constructor(scope: Construct, id: string, props: ConfigRuleWithRemediationProps) {
     super(scope, id);
 
@@ -61,141 +65,159 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       sourceIdentifier,
       evaluationHandler,
       evaluationPath,
-      periodic,
+      remediationDoc,
+      rScope,
       maximumExecutionFrequency,
-      remediationDocs,
-      remediationRoleArn,
-      configRuleScope,
-      cfnScope,
       tags,
       region,
-      accountId,
+      accountID,
       subnetIds,
       securityGroupIds,
-      kmsKeyAlias,
+      kmsEncryptionAliasID,
       taggingLambdaPath,
       taggingLambdaHandler,
-      taggingRoleArn
+      lambdaRoleArn,
+      isPeriodic,
+      inputParameters
     } = props;
 
-    let configRule: config.CfnConfigRule;
-    let evaluationLambda;
+    const ruleScope = (() => {
+      if (rScope?.tagKey && rScope?.tagValue) {
+        return config.RuleScope.fromTag(rScope.tagKey, rScope.tagValue);
+      } else if (rScope?.complianceResourceTypes?.length) {
+        return config.RuleScope.fromResources(rScope.complianceResourceTypes);
+      } else {
+        return config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE);
+      }
+    })();
+
+    const ruleNameSuffix = ruleName.replace(/^hcops-/, '');
+    const functionRuleName = `hcops-tags-${ruleNameSuffix}`;
+
+    let configRuleArn: string;
 
     if (type === 'custom') {
-      evaluationLambda = new BLambdaConstruct(this, `${ruleName}-EvalLambda`, {
-        functionName: `${ruleName}-eval`,
+      this.evaluationLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigLambda`, {
+        functionName: ruleName,
         functionRelativePath: evaluationPath!,
         handler: evaluationHandler!,
         runtime: 'python3.12',
         tags,
         timeout: 300,
         dynatraceConfig: false,
-        existingRoleArn: taggingRoleArn,
-        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountId}:alias/${kmsKeyAlias}`,
+        existingRoleArn: lambdaRoleArn,
+        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
         subnetIds,
         securityGroupIds,
         lambdaLogRetentionInDays: 7
       });
 
-      // ✅ Allow AWS Config to invoke the Lambda
-      evaluationLambda.lambdaFunction.addPermission(`${ruleName}-AllowConfigInvoke`, {
-        principal: new iam.ServicePrincipal('config.amazonaws.com'),
-        action: 'lambda:InvokeFunction',
-        sourceArn: `arn:aws:config:${region}:${accountId}:config-rule/${ruleName}`
-      });
-
-      configRule = new config.CfnConfigRule(this, `${ruleName}-ConfigRule`, {
+      const customRule = new config.CustomRule(this, `${ruleName}-ConfigRule`, {
         configRuleName: ruleName,
         description,
-        source: {
-          owner: 'CUSTOM_LAMBDA',
-          sourceIdentifier: evaluationLambda.lambdaFunction.functionArn,
-          sourceDetails: [
-            {
-              eventSource: 'aws.config',
-              messageType: periodic
-                ? 'ScheduledNotification'
-                : 'ConfigurationItemChangeNotification'
-            }
-          ]
-        },
-        scope: cfnScope,
-        maximumExecutionFrequency: periodic
-          ? (maximumExecutionFrequency ?? config.MaximumExecutionFrequency.ONE_HOUR)
-          : undefined
+        periodic: isPeriodic ?? true,
+        maximumExecutionFrequency: maximumExecutionFrequency ?? config.MaximumExecutionFrequency.ONE_HOUR,
+        lambdaFunction: this.evaluationLambda.lambdaFunction,
+        ruleScope: ruleScope ?? config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE)
       });
 
-    } else {
-      configRule = new config.CfnConfigRule(this, `${ruleName}-ConfigRule`, {
-        configRuleName: ruleName,
-        description,
-        source: {
-          owner: 'AWS',
-          sourceIdentifier: sourceIdentifier!
-        },
-        scope: cfnScope
+      configRuleArn = customRule.configRuleArn;
+
+      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
+        functionName: functionRuleName,
+        functionRelativePath: taggingLambdaPath,
+        handler: taggingLambdaHandler,
+        runtime: 'python3.12',
+        tags,
+        timeout: 60,
+        dynatraceConfig: false,
+        existingRoleArn: lambdaRoleArn,
+        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
+        subnetIds,
+        securityGroupIds,
+        lambdaLogRetentionInDays: 1,
+        environmentVariables: {
+          CONFIG_RULE_ARN: configRuleArn
+        }
       });
+
+      const configTagRule = new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
+        serviceToken: this.taggingLambda.lambdaFunction.functionArn
+      });
+
+      configTagRule.node.addDependency(this.taggingLambda);
+      configTagRule.node.addDependency(customRule);
+    } else if (type === 'managed') {
+      const managedRule = new config.ManagedRule(this, `${ruleName}-ConfigRule`, {
+        configRuleName: ruleName,
+        identifier: sourceIdentifier!,
+        description,
+        ruleScope: ruleScope,
+        inputParameters
+      });
+
+      configRuleArn = managedRule.configRuleArn;
+
+      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
+        functionName: functionRuleName,
+        functionRelativePath: taggingLambdaPath,
+        handler: taggingLambdaHandler,
+        runtime: 'python3.12',
+        tags,
+        timeout: 60,
+        dynatraceConfig: false,
+        existingRoleArn: lambdaRoleArn,
+        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
+        subnetIds,
+        securityGroupIds,
+        lambdaLogRetentionInDays: 1,
+        environmentVariables: {
+          CONFIG_RULE_ARN: configRuleArn
+        }
+      });
+
+      const configTagRule = new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
+        serviceToken: this.taggingLambda.lambdaFunction.functionArn
+      });
+
+      configTagRule.node.addDependency(this.taggingLambda);
+      configTagRule.node.addDependency(managedRule);
     }
 
-    // ✅ Apply tags
-    Object.entries(tags).forEach(([key, value]) => {
-      cdk.Tags.of(configRule).add(key, value);
+    const projectRoot = path.resolve(__dirname, '..', '..', '..');
+    const fullRemediationPath = path.resolve(projectRoot, remediationDoc.path);
+    if (!fs.existsSync(fullRemediationPath)) {
+      throw new Error(`Remediation document not found at path: ${fullRemediationPath}`);
+    }
+
+    const documentContent = JSON.parse(fs.readFileSync(fullRemediationPath, 'utf8'));
+
+    this.ssmDocument = new OMBSsmDocumentsConstruct(this, `${ruleName}-ConfigSSM`, {
+      content: documentContent,
+      documentFormat: 'JSON',
+      documentType: remediationDoc.documentType,
+      name: `${ruleName}-ssm`,
+      updateMethod: 'NewVersion',
+      tags
     });
 
-    const configRuleArn = `arn:aws:config:${region}:${accountId}:config-rule/${configRule.ref}`;
-
-    const taggingLambda = new BLambdaConstruct(this, `${ruleName}-TagLambda`, {
-      functionName: `${ruleName}-tagger`,
-      functionRelativePath: taggingLambdaPath,
-      handler: taggingLambdaHandler,
-      runtime: 'python3.12',
-      tags,
-      timeout: 60,
-      dynatraceConfig: false,
-      existingRoleArn: taggingRoleArn,
-      lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountId}:alias/${kmsKeyAlias}`,
-      subnetIds,
-      securityGroupIds,
-      lambdaLogRetentionInDays: 7,
-      environmentVariables: {
-        CONFIG_RULE_ARN: configRuleArn
-      }
+    const configRemediation = new config.CfnRemediationConfiguration(this, `${ruleName}-ConfigRemediation`, {
+      configRuleName: ruleName,
+      targetId: `${ruleName}-ssm`,
+      targetType: 'SSM_DOCUMENT',
+      automatic: false,
+      executionControls: {
+        ssmControls: {
+          concurrentExecutionRatePercentage: 50,
+          errorPercentage: 10
+        }
+      },
+      maximumAutomaticAttempts: 3,
+      parameters: remediationDoc.parameters,
+      retryAttemptSeconds: 300,
+      targetVersion: '1'
     });
 
-    new CustomResource(this, `${ruleName}-TagCustomResource`, {
-      serviceToken: taggingLambda.lambdaFunction.functionArn
-    });
-
-    remediationDocs.forEach((doc, idx) => {
-      const docContent = JSON.parse(
-        fs.readFileSync(path.resolve(__dirname, doc.path), 'utf8')
-      );
-
-      const ssmDocument = new BSSMDocumentsConstruct(this, `${ruleName}-SSMDoc${idx + 1}`, {
-        content: docContent,
-        documentFormat: 'JSON',
-        documentType: doc.documentType,
-        name: `${ruleName}-ssm-${idx + 1}`,
-        updateMethod: 'NewVersion',
-        tags
-      });
-
-      new config.CfnRemediationConfiguration(this, `${ruleName}-Remediation${idx + 1}`, {
-        configRuleName: ruleName,
-        targetId: `${ruleName}-ssm-${idx + 1}`,
-        targetType: 'SSM_DOCUMENT',
-        automatic: false,
-        executionControls: {
-          ssmControls: {
-            concurrentExecutionRatePercentage: 50,
-            errorPercentage: 10
-          }
-        },
-        maximumAutomaticAttempts: 3,
-        parameters: doc.parameters,
-        retryAttemptSeconds: 300,
-        targetVersion: '1'
-      });
-    });
+    configRemediation.node.addDependency(this.ssmDocument);
   }
 }
