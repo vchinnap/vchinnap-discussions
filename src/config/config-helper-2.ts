@@ -48,7 +48,6 @@ interface ConfigRuleWithRemediationProps {
   lambdaRoleArn: string;
   isPeriodic?: boolean;
   inputParameters?: Record<string, any>;
-  enableTagging?: boolean;
 }
 
 export class ConfigRuleWithRemediationConstruct extends Construct {
@@ -79,11 +78,10 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       taggingLambdaHandler,
       lambdaRoleArn,
       isPeriodic,
-      inputParameters,
-      enableTagging = true
+      inputParameters
     } = props;
 
-    const ruleScope = props.configRuleScope ?? (() => {
+    const ruleScope = (() => {
       if (rScope?.tagKey && rScope?.tagValue) {
         return config.RuleScope.fromTag(rScope.tagKey, rScope.tagValue);
       } else if (rScope?.complianceResourceTypes?.length) {
@@ -120,28 +118,16 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         periodic: isPeriodic ?? true,
         maximumExecutionFrequency: maximumExecutionFrequency ?? config.MaximumExecutionFrequency.ONE_HOUR,
         lambdaFunction: this.evaluationLambda.lambdaFunction,
-        ruleScope
+        ruleScope: ruleScope ?? config.RuleScope.fromResource(config.ResourceType.EC2_INSTANCE)
       });
 
       configRuleArn = customRule.configRuleArn;
-    } else {
-      const managedRule = new config.ManagedRule(this, `${ruleName}-ConfigRule`, {
-        configRuleName: ruleName,
-        identifier: sourceIdentifier!,
-        description,
-        ruleScope,
-        inputParameters
-      });
 
-      configRuleArn = managedRule.configRuleArn;
-    }
-
-    if (enableTagging) {
-      new logs.LogGroup(this, `${ruleName}-TagLogGroup`, {
+      // ✅ Add CfnLogGroup to guarantee deletion on removal
+      new logs.CfnLogGroup(this, `${ruleName}-TagLogGroupCfn`, {
         logGroupName: `/aws/lambda/${functionRuleName}`,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-        retention: logs.RetentionDays.ONE_DAY
-      });
+        retentionInDays: 1
+      }).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
       this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
         functionName: functionRuleName,
@@ -161,9 +147,53 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         }
       });
 
-      new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
+      const configTagRule = new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
         serviceToken: this.taggingLambda.lambdaFunction.functionArn
       });
+
+      configTagRule.node.addDependency(this.taggingLambda);
+      configTagRule.node.addDependency(customRule);
+    } else if (type === 'managed') {
+      const managedRule = new config.ManagedRule(this, `${ruleName}-ConfigRule`, {
+        configRuleName: ruleName,
+        identifier: sourceIdentifier!,
+        description,
+        ruleScope: ruleScope,
+        inputParameters
+      });
+
+      configRuleArn = managedRule.configRuleArn;
+
+      // ✅ Add CfnLogGroup to guarantee deletion on removal
+      new logs.CfnLogGroup(this, `${ruleName}-TagLogGroupCfn`, {
+        logGroupName: `/aws/lambda/${functionRuleName}`,
+        retentionInDays: 1
+      }).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
+        functionName: functionRuleName,
+        functionRelativePath: taggingLambdaPath,
+        handler: taggingLambdaHandler,
+        runtime: 'python3.12',
+        tags,
+        timeout: 60,
+        dynatraceConfig: false,
+        existingRoleArn: lambdaRoleArn,
+        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
+        subnetIds,
+        securityGroupIds,
+        lambdaLogRetentionInDays: undefined,
+        environmentVariables: {
+          CONFIG_RULE_ARN: configRuleArn
+        }
+      });
+
+      const configTagRule = new CustomResource(this, `${ruleName}-ConfigRuleTags`, {
+        serviceToken: this.taggingLambda.lambdaFunction.functionArn
+      });
+
+      configTagRule.node.addDependency(this.taggingLambda);
+      configTagRule.node.addDependency(managedRule);
     }
 
     const projectRoot = path.resolve(__dirname, '..', '..', '..');
