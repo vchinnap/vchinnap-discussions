@@ -9,15 +9,31 @@ const documentContent = JSON.parse(
 );
 
 
-try {
-  const evalLogGroup = logs.LogGroup.fromLogGroupName(
-    this,
-    `${ruleName}-ImportedEvalLogGroup`,
-    `/aws/lambda/${ruleName}`
-  );
-  (evalLogGroup.node.defaultChild as cdk.CfnResource).applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-} catch (err) {
-  console.warn(`Could not apply removalPolicy to evaluation log group: ${err}`);
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import { Tags } from 'aws-cdk-lib';
+
+const eventRule = new events.Rule(this, `${ruleName}-LambdaTagUpdateTrigger`, {
+  eventPattern: {
+    source: ['aws.lambda'],
+    detailType: ['AWS API Call via CloudTrail'],
+    detail: {
+      eventSource: ['lambda.amazonaws.com'],
+      eventName: [
+        'CreateFunction20150331',
+        'UpdateFunctionConfiguration20150331'
+      ],
+      requestParameters: {
+        functionName: [functionRuleName]  // your tagging Lambda name
+      }
+    }
+  },
+  targets: [new targets.LambdaFunction(this.taggingLambda.lambdaFunction)]
+});
+
+// ✅ Apply your tags
+for (const [key, value] of Object.entries(tags)) {
+  Tags.of(eventRule).add(key, value);
 }
 
 
