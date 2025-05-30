@@ -123,7 +123,7 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
 
       configRuleArn = customRule.configRuleArn;
 
-      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
+      const taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
         functionName: functionRuleName,
         functionRelativePath: taggingLambdaPath,
         handler: taggingLambdaHandler,
@@ -146,6 +146,7 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       });
 
       configTagRule.node.addDependency(this.taggingLambda);
+      this.taggingLambda.node.addDependency(customRule);
       configTagRule.node.addDependency(customRule);
     } else if (type === 'managed') {
       const managedRule = new config.ManagedRule(this, `${ruleName}-ConfigRule`, {
@@ -158,7 +159,7 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
 
       configRuleArn = managedRule.configRuleArn;
 
-      this.taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
+      const taggingLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigTagLambda`, {
         functionName: functionRuleName,
         functionRelativePath: taggingLambdaPath,
         handler: taggingLambdaHandler,
@@ -180,8 +181,10 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
         serviceToken: this.taggingLambda.lambdaFunction.functionArn
       });
 
-      configTagRule.node.addDependency(this.taggingLambda);
-      configTagRule.node.addDependency(managedRule);
+  
+    
+      taggingLambda.node.addDependency(managedRule);
+        configTagRule.node.addDependency(managedRule);
     }
 
     const projectRoot = path.resolve(__dirname, '..', '..', '..');
