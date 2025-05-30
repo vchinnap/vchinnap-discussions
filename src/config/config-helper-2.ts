@@ -200,6 +200,42 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       targetVersion: '1'
     });
 
+    const functionCleanupName = `hcops-cleanup-${ruleNameSuffix}`;
+
+    const cleanupLambda = new OMBLambdaConstruct(this, `${ruleName}-ConfigCleanupLambda`, {
+        functionName: functionCleanupName,
+        functionRelativePath: taggingLambdaPath, // reuse same path/folder
+        handler: 'cleanup.handler',              // different entry point in same folder
+        runtime: 'python3.12',
+        tags,
+        timeout: 60,
+        dynatraceConfig: false,
+        existingRoleArn: lambdaRoleArn,
+        lambdaLogGroupKmsKeyArn: `arn:aws:kms:${region}:${accountID}:alias/${kmsEncryptionAliasID}`,
+        subnetIds,
+        securityGroupIds,
+        lambdaLogRetentionInDays: 1,
+        environmentVariables: {
+        CONFIG_RULE_NAME: ruleName
+        }
+    });
+
+    new events.Rule(this, `${ruleName}-ConfigRuleDeletionEvent`, {
+    eventPattern: {
+        source: ['aws.config'],
+        detailType: ['AWS API Call via CloudTrail'],
+        detail: {
+        eventSource: ['config.amazonaws.com'],
+        eventName: ['DeleteConfigRule'],
+        requestParameters: {
+            configRuleName: [ruleName] // 🔥 exact match with the rule you created
+        }
+        }
+    },
+    targets: [new targets.LambdaFunction(cleanupLambda.lambdaFunction)]
+    });
+
+
     configRemediation.node.addDependency(this.ssmDocument);
   }
 }
