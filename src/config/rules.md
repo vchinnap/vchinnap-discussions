@@ -16,7 +16,7 @@ This CDK construct provisions an AWS **managed Config rule**, sets up optional *
 
 ## 🔧 Usage Example
 
-```
+```ts
 new ConfigRuleWithRemediationConstruct(this, 'S3PublicAccessConfigRule', {
   ruleName: 'hcops-s3-public-blocked',
   description: 'Ensures S3 buckets block public access',
@@ -31,7 +31,7 @@ new ConfigRuleWithRemediationConstruct(this, 'S3PublicAccessConfigRule', {
       }
     }
   },
-  rScope: {
+  ruleScopeInput: {
     complianceResourceTypes: [
       config.ResourceType.S3_BUCKET
     ]
@@ -97,31 +97,30 @@ lambda/
 - [AWS Config Managed Rules](https://docs.aws.amazon.com/config/latest/developerguide/managed-rules-by-aws-config.html)
 - [AWS Config Remediation Docs](https://docs.aws.amazon.com/config/latest/developerguide/remediation.html)
 
-
 ---
 
 ## 🧾 ConfigRuleWithRemediationProps Table
 
-| Name                      | Type                             | Description                                                                                         |
-|:--------------------------|:---------------------------------|:----------------------------------------------------------------------------------------------------|
-| ruleName                  | string                           | The name of the AWS Config rule.                                                                    |
-| description               | string                           | Description of the Config rule.                                                                     |
-| type                      | 'managed' | 'custom'             | Specifies whether the rule is managed or custom.                                                    |
-| sourceIdentifier          | string                           | The identifier for the managed rule (required for managed rules).                                   |
-| evaluationHandler         | string                           | The handler for the evaluation Lambda (required for custom rules).                                  |
-| evaluationPath            | string                           | The path to the Lambda source (required for custom rules).                                          |
-| remediationDoc            | RemediationDocInput              | SSM remediation document configuration.                                                             |
-| ruleScopeInput            | RawScopeInput                    | Defines the resource scope of the rule using either tag-based targeting or resource type filtering. |
-| configRuleScope           | config.RuleScope                 | Explicit AWS Config RuleScope override.                                                             |
-| maximumExecutionFrequency | config.MaximumExecutionFrequency | How often AWS Config evaluates the rule.                                                            |
-| tags                      | Record<string, string>           | Tags to assign to the rule, Lambdas, and documents.                                                 |
-| region                    | string                           | AWS region.                                                                                         |
-| accountID                 | string                           | AWS account ID.                                                                                     |
-| subnetIds                 | string[]                         | Subnets for Lambda VPC configuration.                                                               |
-| securityGroupIds          | string[]                         | Security groups for Lambda networking.                                                              |
-| kmsEncryptionAliasID      | string                           | KMS alias used for encrypting Lambda log groups.                                                    |
-| taggingLambdaPath         | string                           | Path to the tagging Lambda code.                                                                    |
-| taggingLambdaHandler      | string                           | Handler for the tagging Lambda function.                                                            |
-| lambdaRoleArn             | string                           | IAM role ARN for Lambdas.                                                                           |
-| isPeriodic                | boolean                          | Defines if a custom rule is evaluated periodically.                                                 |
-| inputParameters           | Record<string, any>              | Parameters passed to managed rules (if applicable).                                                 |
+| Name                      | Description                                                                                         |
+|:--------------------------|:----------------------------------------------------------------------------------------------------|
+| ruleName                  | The name of the AWS Config rule.                                                                    |
+| description               | Description of the Config rule.                                                                     |
+| type                      | Specifies whether the rule is managed or custom.                                                    |
+| sourceIdentifier          | The identifier for the managed rule (required for managed rules).                                   |
+| evaluationHandler         | The handler for the evaluation Lambda (required for custom rules).                                  |
+| evaluationPath            | The path to the Lambda source (required for custom rules).                                          |
+| remediationDoc            | SSM remediation document configuration.                                                             |
+| ruleScopeInput            | Defines the resource scope of the rule using either tag-based targeting or resource type filtering. |
+| configRuleScope           | Explicit AWS Config RuleScope override.                                                             |
+| maximumExecutionFrequency | How often AWS Config evaluates the rule.                                                            |
+| tags                      | Tags to assign to the rule, Lambdas, and documents.                                                 |
+| region                    | AWS region.                                                                                         |
+| accountID                 | AWS account ID.                                                                                     |
+| subnetIds                 | Subnets for Lambda VPC configuration.                                                               |
+| securityGroupIds          | Security groups for Lambda networking.                                                              |
+| kmsEncryptionAliasID      | KMS alias used for encrypting Lambda log groups.                                                    |
+| taggingLambdaPath         | Path to the tagging Lambda code.                                                                    |
+| taggingLambdaHandler      | Handler for the tagging Lambda function.                                                            |
+| lambdaRoleArn             | IAM role ARN for Lambdas.                                                                           |
+| isPeriodic                | Defines if a custom rule is evaluated periodically.                                                 |
+| inputParameters           | Parameters passed to managed rules (if applicable).                                                 |
