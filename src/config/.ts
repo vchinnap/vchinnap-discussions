@@ -9,6 +9,27 @@ const documentContent = JSON.parse(
 );
 
 
+
+
+
+const customRule = new config.CustomRule(this, `${ruleName}-ConfigRule`, {
+  configRuleName: ruleName,
+  description,
+  lambdaFunction: this.evaluationLambda.lambdaFunction,
+  ruleScope,
+  inputParameters,
+  ...(isPeriodic !== undefined || maximumExecutionFrequency !== undefined
+    ? {
+        periodic: isPeriodic ?? true,
+        maximumExecutionFrequency: maximumExecutionFrequency ?? config.MaximumExecutionFrequency.TWENTY_FOUR_HOURS
+      }
+    : {
+        periodic: false
+      })
+});
+
+
+
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { Tags } from 'aws-cdk-lib';
