@@ -183,6 +183,32 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       tags
     });
 
+
+    import * as yaml from 'js-yaml'; // make sure to install this via npm
+
+const projectRoot = path.resolve(__dirname, '..', '..', '..');
+const remediationBasePath = path.resolve(projectRoot, 'service/lambda-functions/remediations');
+
+const possiblePaths = [
+  path.join(remediationBasePath, `${ruleName}.json`),
+  path.join(remediationBasePath, `${ruleName}.yml`),
+  path.join(remediationBasePath, `${ruleName}.yaml`)
+];
+
+const fullRemediationPath = possiblePaths.find(p => fs.existsSync(p));
+
+if (!fullRemediationPath) {
+  throw new Error(`Remediation document not found for rule "${ruleName}". Checked paths:\n${possiblePaths.join('\n')}`);
+}
+
+let documentContent;
+if (fullRemediationPath.endsWith('.json')) {
+  documentContent = JSON.parse(fs.readFileSync(fullRemediationPath, 'utf-8'));
+} else {
+  documentContent = yaml.load(fs.readFileSync(fullRemediationPath, 'utf-8'));
+}
+
+
     const configRemediation = new config.CfnRemediationConfiguration(this, `${ruleName}-ConfigRemediation`, {
       configRuleName: ruleName,
       targetId: `${ruleName}-ssm`,
