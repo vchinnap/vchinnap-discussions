@@ -5,10 +5,10 @@ export class CpuAlarmMissing extends Construct {
     super(scope, id);
 
     new SecurityHubFindingWithRemediationConstruct(this, 'BMO.EC2.1-Finding', {
-      controlId: 'BMO.EC2.1',
+      controlId: 'OMB.EC2.1',
       controlTitle: 'Ensure CPUUtilization alarm exists for EC2',
       controlDescription: 'EC2 with ConfigRule=True tag must have a CloudWatch alarm for CPU.',
-      relatedRequirements: ['BMO-Policy-3.2', 'Internal-GRC-EC2-101'],
+      relatedRequirements: ['OMB-Policy-3.2', 'Internal-GRC-EC2-101'],
       severity: 'HIGH',
 
       evaluationLambdaPath: '../service/lambda-functions/evaluations',
@@ -26,7 +26,7 @@ export class CpuAlarmMissing extends Construct {
       resources: ['AwsEc2Instance'],
       tags: {
         Owner: 'PlatformTeam',
-        Standard: 'BMO-Security'
+        Standard: 'OMB-Security'
       },
       lambdaRoleArn: 'arn:aws:iam::123456789012:role/lambda-exec-role',
       subnetIds: ['subnet-abc', 'subnet-def'],
