@@ -1,28 +1,26 @@
 import boto3
+import json
+import os
 
-logs = boto3.client('logs')
-ssm = boto3.client('ssm')
+logs_client = boto3.client('logs')
 
-def handler(event, context):
+def lambda_handler(event, context):
+    # Extract rule name from the CloudTrail event
     try:
         rule_name = event['detail']['requestParameters']['configRuleName']
-        lambda_name = f"{rule_name}-tags"
-        log_group_name = f"/aws/lambda/{lambda_name}"
-        ssm_doc_name = f"{rule_name}-ssm"
+        log_group_name = f"/aws/lambda/{rule_name}-tags"
 
-        # 🔥 Delete log group
-        try:
-            logs.delete_log_group(logGroupName=log_group_name)
-            print(f"🧹 Deleted log group: {log_group_name}")
-        except logs.exceptions.ResourceNotFoundException:
-            print(f"ℹ️ Log group not found: {log_group_name}")
-
-        # 🔥 Delete SSM document
-        try:
-            ssm.delete_document(Name=ssm_doc_name)
-            print(f"🧹 Deleted SSM Document: {ssm_doc_name}")
-        except ssm.exceptions.InvalidDocument:
-            print(f"ℹ️ SSM Document not found: {ssm_doc_name}")
+        # Delete the log group
+        response = logs_client.delete_log_group(logGroupName=log_group_name)
+        print(f"Deleted log group: {log_group_name}")
+        return {
+            'statusCode': 200,
+            'body': f"Successfully deleted log group: {log_group_name}"
+        }
 
     except Exception as e:
-        print(f"❌ Cleanup failed: {e}")
+        print(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': f"Failed to delete log group: {str(e)}"
+        }
