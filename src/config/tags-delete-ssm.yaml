@@ -1,0 +1,22 @@
+---
+schemaVersion: '0.3'
+description: "Deletes orphan CloudWatch log groups not associated with existing Config rules."
+assumeRole: "{{ AutomationAssumeRole }}"
+parameters:
+  AutomationAssumeRole:
+    type: String
+    description: "(Required) The ARN of the role that allows Automation to perform the remediation."
+
+  LogGroupName:
+    type: String
+    description: "(Required) The full name of the log group to delete."
+    default: "{{ ComplianceResourceId }}"
+
+mainSteps:
+  - name: deleteOrphanLogGroup
+    action: aws:executeAwsApi
+    inputs:
+      Service: logs
+      Api: DeleteLogGroup
+      LogGroupName: "{{ LogGroupName }}"
+    description: "Deletes the CloudWatch log group that is considered orphan."
