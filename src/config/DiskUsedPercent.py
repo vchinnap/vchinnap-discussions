@@ -9,11 +9,9 @@ def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
 
-    # Get EC2s with ConfigRule=True tag
+    # Get EC2 instances with tag ConfigRule=True
     response = ec2.describe_instances(
-        Filters=[
-            {'Name': 'tag:ConfigRule', 'Values': ['True']}
-        ]
+        Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
     )
 
     for reservation in response['Reservations']:
@@ -22,7 +20,7 @@ def lambda_handler(event, context):
             timestamp = instance['LaunchTime']
             image_id = instance['ImageId']
 
-            # Detect OS from Image ID
+            # Detect OS flavor from AMI name
             try:
                 image_details = ec2.describe_images(ImageIds=[image_id])['Images'][0]
                 ami_name = image_details.get('Name', '').lower()
@@ -41,17 +39,18 @@ def lambda_handler(event, context):
                 print(f"Skipping unsupported AMI: {ami_name}")
                 continue
 
-            # Normalize required paths
+            # Normalize paths for consistency
             required_paths = [p.rstrip('/').lower() for p in required_paths]
             path_alarms = {path: False for path in required_paths}
 
-            # Check CloudWatch alarms
+            # Check CloudWatch alarms for this instance
             try:
                 alarms = cloudwatch.describe_alarms(AlarmTypes=['MetricAlarm'])['MetricAlarms']
                 for alarm in alarms:
                     dimensions = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
                     if dimensions.get('InstanceId') != instance_id:
                         continue
+
                     if alarm.get('MetricName') == 'disk_used_percent':
                         raw_path = dimensions.get('path', '')
                         path = raw_path.rstrip('/').lower()
@@ -61,7 +60,7 @@ def lambda_handler(event, context):
                 print(f"Error retrieving alarms: {e}")
                 continue
 
-            # Compliance decision
+            # Evaluate compliance
             missing_paths = [path for path, found in path_alarms.items() if not found]
             if not missing_paths:
                 compliance_type = 'COMPLIANT'
