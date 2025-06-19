@@ -9,7 +9,6 @@ def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
 
-    # Get EC2s with tag ConfigRule=True
     try:
         response = ec2.describe_instances(
             Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
@@ -24,11 +23,10 @@ def lambda_handler(event, context):
             timestamp = instance['LaunchTime']
             platform = instance.get('PlatformDetails', '')
 
-            # Filter only Linux/UNIX
             if platform != 'Linux/UNIX':
                 continue
 
-            # Determine OS flavor from AMI name
+            # Determine OS flavor from AMI
             image_id = instance['ImageId']
             try:
                 image = ec2.describe_images(ImageIds=[image_id])['Images'][0]
@@ -47,36 +45,39 @@ def lambda_handler(event, context):
                 print(f"Skipping unsupported AMI: {ami_name}")
                 continue
 
-            path_metrics = {path: False for path in required_paths}
+            print(f"\nEvaluating instance: {instance_id} ({os_flavor})")
 
-            # Use list_metrics() to check if disk_used_percent is being published
+            # Initialize alarm tracking per required path
+            path_alarms = {path: False for path in required_paths}
+
             try:
-                paginator = cloudwatch.get_paginator('list_metrics')
-                for page in paginator.paginate(
-                    Namespace='HCOPS/ADF',
-                    MetricName='disk_used_percent',
-                    Dimensions=[
-                        {'Name': 'InstanceId', 'Value': instance_id}
-                    ]
-                ):
-                    for metric in page['Metrics']:
-                        dims = {d['Name']: d['Value'] for d in metric.get('Dimensions', [])}
-                        path = dims.get('path')
-                        if path in path_metrics:
-                            path_metrics[path] = True
-                            print(f"Metric found for {instance_id} at path: {path}")
+                alarms = cloudwatch.describe_alarms(AlarmTypes=['MetricAlarm'])['MetricAlarms']
+                for alarm in alarms:
+                    alarm_name = alarm.get('AlarmName', '')
+                    if instance_id not in alarm_name:
+                        continue
+                    if 'disk_used_percent' not in alarm.get('MetricName', ''):
+                        continue
+
+                    for path in required_paths:
+                        # Normalize match: handles spacing around "MountPoint :" or "MountPoint:"
+                        if f"MountPoint : {path}" in alarm_name or f"MountPoint: {path}" in alarm_name or f"MountPoint :{path}" in alarm_name:
+                            path_alarms[path] = True
+                            print(f"Matched alarm: {alarm_name} → path: {path}")
             except Exception as e:
-                print(f"Error listing metrics for {instance_id}: {e}")
+                print(f"Error retrieving alarms for instance {instance_id}: {e}")
                 continue
 
-            # Evaluate compliance
-            missing_paths = [path for path, found in path_metrics.items() if not found]
+            # Step 3: Final compliance check
+            missing_paths = [path for path, has_alarm in path_alarms.items() if not has_alarm]
             if not missing_paths:
                 compliance_type = 'COMPLIANT'
-                annotation = f"{os_flavor}: All required disk_used_percent metrics are present."
+                annotation = f"{os_flavor}: Alarms exist for all required paths (via AlarmName match)."
+                print(f"Result: COMPLIANT")
             else:
                 compliance_type = 'NON_COMPLIANT'
-                annotation = f"{os_flavor}: Missing disk_used_percent metrics for: {', '.join(missing_paths)}"
+                annotation = f"{os_flavor}: Missing alarms for paths: {', '.join(missing_paths)}"
+                print(f"Result: NON_COMPLIANT. Missing: {missing_paths}")
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::EC2::Instance',
