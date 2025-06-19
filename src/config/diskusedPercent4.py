@@ -1,9 +1,14 @@
 import boto3
 import json
+from datetime import datetime, timezone
+
+config = boto3.client('config')
+ec2 = boto3.client('ec2')
+cloudwatch = boto3.client('cloudwatch')
 
 def lambda_handler(event, context):
-    ec2 = boto3.client('ec2')
-    cloudwatch = boto3.client('cloudwatch')
+    result_token = event.get('resultToken', 'TESTMODE')
+    evaluations = []
 
     try:
         instances = ec2.describe_instances(
@@ -20,6 +25,7 @@ def lambda_handler(event, context):
         for instance in reservation['Instances']:
             instance_id = instance['InstanceId']
             platform = instance.get('PlatformDetails', '')
+            timestamp = instance['LaunchTime']
 
             if platform != 'Linux/UNIX':
                 continue
@@ -45,7 +51,8 @@ def lambda_handler(event, context):
             instance_ids.append(instance_id)
             instance_map[instance_id] = {
                 "required_paths": required_paths,
-                "os_flavor": os_flavor
+                "os_flavor": os_flavor,
+                "timestamp": timestamp
             }
 
     if not instance_ids:
@@ -69,6 +76,7 @@ def lambda_handler(event, context):
 
         required_paths = instance_map[instance_id]['required_paths']
         os_flavor = instance_map[instance_id]['os_flavor']
+        timestamp = instance_map[instance_id]['timestamp']
         path_status = {path: False for path in required_paths}
 
         for alarm in all_alarms:
@@ -87,11 +95,38 @@ def lambda_handler(event, context):
 
         missing_paths = [p for p, present in path_status.items() if not present]
         if missing_paths:
-            print(f"❌ {os_flavor} - Alarms missing for paths: {', '.join(missing_paths)}")
+            compliance_type = 'NON_COMPLIANT'
+            annotation = f"{os_flavor}: Alarms missing for paths: {', '.join(missing_paths)}"
         else:
-            print(f"✅ {os_flavor} - All required disk_used_percent alarms are present for this instance.")
+            compliance_type = 'COMPLIANT'
+            annotation = f"{os_flavor}: All required disk_used_percent alarms are present."
 
+        print(f"📌 Evaluation: {instance_id} → {compliance_type}")
+        print(f"📝 Annotation: {annotation}")
 
+        evaluations.append({
+            'ComplianceResourceType': 'AWS::EC2::Instance',
+            'ComplianceResourceId': instance_id,
+            'ComplianceType': compliance_type,
+            'Annotation': annotation,
+            'OrderingTimestamp': timestamp
+        })
+
+    # Submit results to AWS Config
+    if result_token != 'TESTMODE' and evaluations:
+        try:
+            config.put_evaluations(
+                Evaluations=evaluations,
+                ResultToken=result_token
+            )
+            print("✅ Submitted evaluations to AWS Config")
+        except Exception as e:
+            print(f"❌ Error submitting evaluations: {e}")
+
+    return {
+        'status': 'completed',
+        'evaluated': len(evaluations)
+    }
 
 
 
