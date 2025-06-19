@@ -19,10 +19,10 @@ def lambda_handler(event, context):
 
     try:
         alarms_response = cloudwatch.describe_alarms()
-        alarm_names = [alarm['AlarmName'] for alarm in alarms_response.get('MetricAlarms', [])]
+        all_alarms = alarms_response.get('MetricAlarms', [])
     except Exception as e:
         print(f"Error fetching alarms: {e}")
-        alarm_names = []
+        all_alarms = []
 
     for reservation in response['Reservations']:
         for instance in reservation['Instances']:
@@ -69,10 +69,18 @@ def lambda_handler(event, context):
                             path_status[path]['metric_found'] = True
                             print(f"Metric found for {instance_id} at path: {path}")
 
-                            for alarm_name in alarm_names:
-                                if instance_id in alarm_name and path in alarm_name:
+                            # Alarm match logic with normalization
+                            normalized_path = path.strip().lower()
+                            normalized_instance_id = instance_id.strip().lower()
+
+                            for alarm in all_alarms:
+                                raw_alarm_name = alarm.get('AlarmName', '')
+                                alarm_name_normalized = raw_alarm_name.replace('MountPoint :', 'MountPoint:').lower()
+
+                                if (normalized_instance_id in alarm_name_normalized and 
+                                    f"mountpoint:{normalized_path}" in alarm_name_normalized):
                                     path_status[path]['alarm_found'] = True
-                                    print(f"Matched: Alarm '{alarm_name}' contains instance ID and path '{path}'")
+                                    print(f"Matched: Alarm '{raw_alarm_name}' contains instance ID and path '{path}'")
                                     break
 
                             if not path_status[path]['alarm_found']:
