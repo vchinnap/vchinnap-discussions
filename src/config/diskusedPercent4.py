@@ -5,8 +5,6 @@ def lambda_handler(event, context):
     ec2 = boto3.client('ec2')
     cloudwatch = boto3.client('cloudwatch')
 
-    required_paths = ['/var', '/tmp', '/var/log', '/var/log/audit', '/home', '/opt', '/usr']
-
     try:
         instances = ec2.describe_instances(
             Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
@@ -16,15 +14,45 @@ def lambda_handler(event, context):
         return
 
     instance_ids = []
+    instance_map = {}
+
     for reservation in instances['Reservations']:
         for instance in reservation['Instances']:
-            instance_ids.append(instance['InstanceId'])
+            instance_id = instance['InstanceId']
+            platform = instance.get('PlatformDetails', '')
+
+            if platform != 'Linux/UNIX':
+                continue
+
+            image_id = instance.get('ImageId')
+            try:
+                image = ec2.describe_images(ImageIds=[image_id])['Images'][0]
+                ami_name = image.get('Name', '').lower()
+            except Exception as e:
+                print(f"❌ Error fetching AMI for {instance_id}: {e}")
+                continue
+
+            if 'rhel' in ami_name or 'redhat' in ami_name:
+                os_flavor = 'Red Hat Linux'
+                required_paths = ['/var', '/tmp', '/var/log', '/var/log/audit', '/home', '/opt', '/usr']
+            elif 'amzn' in ami_name or 'al2' in ami_name:
+                os_flavor = 'Amazon Linux'
+                required_paths = ['/']
+            else:
+                print(f"⚠️ Unsupported AMI: {ami_name} for instance {instance_id}")
+                continue
+
+            instance_ids.append(instance_id)
+            instance_map[instance_id] = {
+                "required_paths": required_paths,
+                "os_flavor": os_flavor
+            }
 
     if not instance_ids:
-        print("ℹ️ No instances found with tag ConfigRule=True")
+        print("ℹ️ No Linux EC2 instances found with ConfigRule=True.")
         return
 
-    print(f"✅ Found instances: {instance_ids}")
+    print(f"✅ Instances for evaluation: {instance_ids}")
 
     try:
         paginator = cloudwatch.get_paginator('describe_alarms')
@@ -38,6 +66,9 @@ def lambda_handler(event, context):
 
     for instance_id in instance_ids:
         print(f"\n🔍 Checking alarms for Instance ID: {instance_id}")
+
+        required_paths = instance_map[instance_id]['required_paths']
+        os_flavor = instance_map[instance_id]['os_flavor']
         path_status = {path: False for path in required_paths}
 
         for alarm in all_alarms:
@@ -51,14 +82,15 @@ def lambda_handler(event, context):
             path = dims.get('path')
             if path in required_paths:
                 path_status[path] = True
-                print(f"✅ Matched: AlarmName: {alarm['AlarmName']} | Path: {path}")
+                print(f"✅ Matched: {alarm['AlarmName']} | Path: {path}")
                 print(json.dumps(alarm, indent=2, default=str))
 
         missing_paths = [p for p, present in path_status.items() if not present]
         if missing_paths:
-            print(f"❌ Missing alarms for paths: {', '.join(missing_paths)}")
+            print(f"❌ {os_flavor} - Alarms missing for paths: {', '.join(missing_paths)}")
         else:
-            print("✅ All required alarms are present for this instance.")
+            print(f"✅ {os_flavor} - All required disk_used_percent alarms are present for this instance.")
+
 
 
 
