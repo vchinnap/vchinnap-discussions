@@ -9,8 +9,8 @@ def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
 
+    # Get EC2s with tag ConfigRule=True
     try:
-        print("Fetching EC2 instances with tag ConfigRule=True...")
         response = ec2.describe_instances(
             Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
         )
@@ -24,17 +24,15 @@ def lambda_handler(event, context):
             timestamp = instance['LaunchTime']
             platform = instance.get('PlatformDetails', '')
 
-            print(f"\nProcessing instance: {instance_id}")
+            # Filter only Linux/UNIX
             if platform != 'Linux/UNIX':
-                print(f"Skipping: Not a Linux/UNIX platform ({platform})")
                 continue
 
-            # Detect OS flavor
+            # Determine OS flavor from AMI name
             image_id = instance['ImageId']
             try:
                 image = ec2.describe_images(ImageIds=[image_id])['Images'][0]
                 ami_name = image.get('Name', '').lower()
-                print(f"AMI name: {ami_name}")
             except Exception as e:
                 print(f"Error fetching AMI for instance {instance_id}: {e}")
                 continue
@@ -46,65 +44,39 @@ def lambda_handler(event, context):
                 os_flavor = 'Amazon Linux'
                 required_paths = ['/']
             else:
-                print(f"Unsupported AMI: {ami_name}. Skipping instance.")
+                print(f"Skipping unsupported AMI: {ami_name}")
                 continue
 
-            print(f"OS Flavor: {os_flavor}")
-            print("Discovering published metric paths...")
+            path_metrics = {path: False for path in required_paths}
 
-            # Step 1: Get published metric paths
-            found_paths = set()
+            # Use list_metrics() to check if disk_used_percent is being published
             try:
                 paginator = cloudwatch.get_paginator('list_metrics')
                 for page in paginator.paginate(
+                    Namespace='HCOPS/ADF',
                     MetricName='disk_used_percent',
-                    Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}]
+                    Dimensions=[
+                        {'Name': 'InstanceId', 'Value': instance_id}
+                    ]
                 ):
                     for metric in page['Metrics']:
-                        dims = {d['Name']: d['Value'] for d in metric['Dimensions']}
-                        path = dims.get('path') or dims.get('device')
-                        if path in required_paths:
-                            found_paths.add(path)
-                            print(f"Metric found for path: {path}")
+                        dims = {d['Name']: d['Value'] for d in metric.get('Dimensions', [])}
+                        path = dims.get('path')
+                        if path in path_metrics:
+                            path_metrics[path] = True
+                            print(f"Metric found for {instance_id} at path: {path}")
             except Exception as e:
-                print(f"Error listing metrics: {e}")
+                print(f"Error listing metrics for {instance_id}: {e}")
                 continue
 
-            if not found_paths:
-                print("No matching metric paths published. Skipping instance.")
-                continue
-
-            # Step 2: Initialize alarm flags for found paths only
-            path_alarms = {path: False for path in found_paths}
-            print("Checking alarms...")
-
-            try:
-                alarms = cloudwatch.describe_alarms(AlarmTypes=['MetricAlarm'])['MetricAlarms']
-                for alarm in alarms:
-                    if alarm.get('MetricName') != 'disk_used_percent':
-                        continue
-
-                    dims = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
-                    alarm_instance = dims.get('InstanceId')
-                    alarm_path = dims.get('path') or dims.get('device')
-
-                    if alarm_instance == instance_id and alarm_path in path_alarms:
-                        path_alarms[alarm_path] = True
-                        print(f"Alarm matched for path: {alarm_path} (AlarmName: {alarm['AlarmName']})")
-            except Exception as e:
-                print(f"Error retrieving alarms: {e}")
-                continue
-
-            # Step 3: Final compliance check
-            missing_paths = [path for path, has_alarm in path_alarms.items() if not has_alarm]
+            # Evaluate compliance
+            missing_paths = [path for path, found in path_metrics.items() if not found]
             if not missing_paths:
                 compliance_type = 'COMPLIANT'
-                annotation = f"{os_flavor}: Alarms exist for all required paths."
-                print("Result: COMPLIANT")
+                annotation = f"{os_flavor}: All required disk_used_percent metrics are present."
             else:
                 compliance_type = 'NON_COMPLIANT'
-                annotation = f"{os_flavor}: Missing alarms for paths: {', '.join(missing_paths)}"
-                print(f"Result: NON_COMPLIANT. Missing alarms for: {missing_paths}")
+                annotation = f"{os_flavor}: Missing disk_used_percent metrics for: {', '.join(missing_paths)}"
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::EC2::Instance',
@@ -114,12 +86,14 @@ def lambda_handler(event, context):
                 'OrderingTimestamp': timestamp
             })
 
-    # Step 4: Submit to AWS Config
+    # Submit evaluations to AWS Config
     if result_token != 'TESTMODE' and evaluations:
         try:
-            print(f"Submitting {len(evaluations)} evaluations to AWS Config...")
-            config.put_evaluations(Evaluations=evaluations, ResultToken=result_token)
-            print("Evaluations submitted successfully.")
+            config.put_evaluations(
+                Evaluations=evaluations,
+                ResultToken=result_token
+            )
+            print("Submitted evaluations to AWS Config")
         except Exception as e:
             print(f"Error submitting evaluations: {e}")
 
