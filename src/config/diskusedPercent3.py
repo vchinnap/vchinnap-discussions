@@ -51,60 +51,29 @@ def lambda_handler(event, context):
                 print(f"Skipping unsupported AMI: {ami_name}")
                 continue
 
-            path_status = {
-                path: {'metric_found': False, 'alarm_found': False} for path in required_paths
-            }
+            path_alarms = {path: False for path in required_paths}
 
             print(f"\nChecking alarms for instance: {instance_id}")
             for alarm in all_alarms:
-                if instance_id in alarm.get('AlarmName', ''):
-                    print(f"Relevant Alarm: {alarm['AlarmName']}")
+                if alarm.get('MetricName') != 'disk_used_percent':
+                    continue
 
-            try:
-                paginator = cloudwatch.get_paginator('list_metrics')
-                for page in paginator.paginate(
-                    Namespace='HCOPS/ADF',
-                    MetricName='disk_used_percent',
-                    Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}]
-                ):
-                    for metric in page['Metrics']:
-                        dims = {d['Name']: d['Value'] for d in metric.get('Dimensions', [])}
-                        path = dims.get('path')
-                        if path in path_status:
-                            path_status[path]['metric_found'] = True
-                            print(f"Metric found for {instance_id} at path: {path}")
+                dims = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
+                alarm_instance_id = dims.get('InstanceId')
+                alarm_path = dims.get('path')
 
-                            normalized_path = path.strip().lower()
-                            normalized_instance_id = instance_id.strip().lower()
+                if alarm_instance_id == instance_id and alarm_path in path_alarms:
+                    path_alarms[alarm_path] = True
+                    print(f"Matched alarm for instance {instance_id}, path {alarm_path}: {alarm.get('AlarmName')}")
 
-                            for alarm in all_alarms:
-                                raw_alarm_name = alarm.get('AlarmName', '')
-                                alarm_name_normalized = raw_alarm_name.replace('MountPoint :', 'MountPoint:').lower()
+            missing_paths = [p for p, found in path_alarms.items() if not found]
 
-                                if (normalized_instance_id in alarm_name_normalized and 
-                                    f"mountpoint:{normalized_path}" in alarm_name_normalized):
-                                    path_status[path]['alarm_found'] = True
-                                    print(f"Matched: Alarm '{raw_alarm_name}' contains instance ID and path '{path}'")
-                                    break
-
-                            if not path_status[path]['alarm_found']:
-                                print(f"Not Matched: No alarm found for instance ID '{instance_id}' and path '{path}'")
-            except Exception as e:
-                print(f"Error listing metrics for {instance_id}: {e}")
-                continue
-
-            missing_metric_paths = [p for p, val in path_status.items() if not val['metric_found']]
-            missing_alarm_paths = [p for p, val in path_status.items() if val['metric_found'] and not val['alarm_found']]
-
-            if missing_metric_paths:
+            if missing_paths:
                 compliance_type = 'NON_COMPLIANT'
-                annotation = f"{os_flavor}: Missing disk_used_percent metrics for: {', '.join(missing_metric_paths)}"
-            elif missing_alarm_paths:
-                compliance_type = 'NON_COMPLIANT'
-                annotation = f"{os_flavor}: Alarms missing for: {', '.join(missing_alarm_paths)}"
+                annotation = f"{os_flavor}: Alarms missing for paths: {', '.join(missing_paths)}"
             else:
                 compliance_type = 'COMPLIANT'
-                annotation = f"{os_flavor}: All required disk_used_percent metrics and alarms are present."
+                annotation = f"{os_flavor}: All required disk_used_percent alarms are present."
 
             print(f"Evaluation: {instance_id} - {compliance_type}")
             print(f"Annotation: {annotation}")
