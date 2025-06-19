@@ -55,6 +55,11 @@ def lambda_handler(event, context):
                 path: {'metric_found': False, 'alarm_found': False} for path in required_paths
             }
 
+            print(f"\nChecking alarms for instance: {instance_id}")
+            for alarm in all_alarms:
+                if instance_id in alarm.get('AlarmName', ''):
+                    print(f"Relevant Alarm: {alarm['AlarmName']}")
+
             try:
                 paginator = cloudwatch.get_paginator('list_metrics')
                 for page in paginator.paginate(
@@ -69,7 +74,6 @@ def lambda_handler(event, context):
                             path_status[path]['metric_found'] = True
                             print(f"Metric found for {instance_id} at path: {path}")
 
-                            # Alarm match logic with normalization
                             normalized_path = path.strip().lower()
                             normalized_instance_id = instance_id.strip().lower()
 
