@@ -15,8 +15,16 @@ def lambda_handler(event, context):
             Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
         )
     except Exception as e:
-        print(f"❌ Error fetching EC2 instances: {e}")
+        print(f"Error fetching EC2 instances: {e}")
         return
+
+    # Fetch all CloudWatch alarms once
+    try:
+        alarms_response = cloudwatch.describe_alarms()
+        alarm_names = [alarm['AlarmName'] for alarm in alarms_response.get('MetricAlarms', [])]
+    except Exception as e:
+        print(f"Error fetching alarms: {e}")
+        alarm_names = []
 
     for reservation in response['Reservations']:
         for instance in reservation['Instances']:
@@ -24,17 +32,17 @@ def lambda_handler(event, context):
             timestamp = instance['LaunchTime']
             platform = instance.get('PlatformDetails', '')
 
-            # ✅ Filter only Linux/UNIX
+            # Filter only Linux/UNIX
             if platform != 'Linux/UNIX':
                 continue
 
-            # ✅ Determine OS flavor from AMI name
+            # Determine OS flavor from AMI name
             image_id = instance['ImageId']
             try:
                 image = ec2.describe_images(ImageIds=[image_id])['Images'][0]
                 ami_name = image.get('Name', '').lower()
             except Exception as e:
-                print(f"❌ Error fetching AMI for instance {instance_id}: {e}")
+                print(f"Error fetching AMI for instance {instance_id}: {e}")
                 continue
 
             if 'rhel' in ami_name or 'redhat' in ami_name:
@@ -44,12 +52,12 @@ def lambda_handler(event, context):
                 os_flavor = 'Amazon Linux'
                 required_paths = ['/']
             else:
-                print(f"⏭ Skipping unsupported AMI: {ami_name}")
+                print(f"Skipping unsupported AMI: {ami_name}")
                 continue
 
             path_metrics = {path: False for path in required_paths}
 
-            # ✅ Use list_metrics() to check if disk_used_percent is being published
+            # Check CloudWatch metrics for disk_used_percent
             try:
                 paginator = cloudwatch.get_paginator('list_metrics')
                 for page in paginator.paginate(
@@ -64,12 +72,24 @@ def lambda_handler(event, context):
                         path = dims.get('path')
                         if path in path_metrics:
                             path_metrics[path] = True
-                            print(f"✅ Metric found for {instance_id} at path: {path}")
+                            print(f"Metric found for {instance_id} at path: {path}")
+
+                            # Check if any alarm contains both instance ID and exact path
+                            matched = False
+                            for alarm_name in alarm_names:
+                                if instance_id in alarm_name and path in alarm_name:
+                                    print(f"Matched: Alarm '{alarm_name}' contains instance ID and path '{path}'")
+                                    matched = True
+                                    break
+
+                            if not matched:
+                                print(f"Not Matched: No alarm found for instance ID '{instance_id}' and path '{path}'")
+
             except Exception as e:
-                print(f"❌ Error listing metrics for {instance_id}: {e}")
+                print(f"Error listing metrics for {instance_id}: {e}")
                 continue
 
-            # ✅ Evaluate compliance
+            # Evaluate compliance
             missing_paths = [path for path, found in path_metrics.items() if not found]
             if not missing_paths:
                 compliance_type = 'COMPLIANT'
@@ -86,16 +106,16 @@ def lambda_handler(event, context):
                 'OrderingTimestamp': timestamp
             })
 
-    # ✅ Submit evaluations to AWS Config
+    # Submit evaluations to AWS Config
     if result_token != 'TESTMODE' and evaluations:
         try:
             config.put_evaluations(
                 Evaluations=evaluations,
                 ResultToken=result_token
             )
-            print("✅ Submitted evaluations to AWS Config")
+            print("Submitted evaluations to AWS Config")
         except Exception as e:
-            print(f"❌ Error submitting evaluations: {e}")
+            print(f"Error submitting evaluations: {e}")
 
     return {
         'status': 'completed',
