@@ -11,6 +11,7 @@ def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
     ami_cache = {}
+    allowed_namespaces = ['CWAgent', 'HCOPS/EDF']
 
     try:
         response = ec2.describe_instances(
@@ -55,15 +56,37 @@ def lambda_handler(event, context):
             print(f"Required paths: {required_paths}")
             path_alarms = {path: False for path in required_paths}
 
-            # Get only disk_used_percent alarms
+            # Fetch all alarms and filter relevant ones
             try:
                 all_alarms = cloudwatch.describe_alarms(AlarmTypes=['MetricAlarm'])['MetricAlarms']
-                disk_alarms = [alarm for alarm in all_alarms if alarm.get('MetricName') == 'disk_used_percent']
-                print(f"Found {len(disk_alarms)} disk_used_percent alarms")
+                disk_alarms = []
+
+                for alarm in all_alarms:
+                    # Check simple alarm format
+                    if (
+                        alarm.get('MetricName') == 'disk_used_percent' and
+                        alarm.get('Namespace') in allowed_namespaces
+                    ):
+                        disk_alarms.append(alarm)
+                        continue
+
+                    # Check multi-metric format
+                    if 'Metrics' in alarm:
+                        for metric_entry in alarm['Metrics']:
+                            metric = metric_entry.get('MetricStat', {}).get('Metric', {})
+                            if (
+                                metric.get('MetricName') == 'disk_used_percent' and
+                                metric.get('Namespace') in allowed_namespaces
+                            ):
+                                disk_alarms.append(alarm)
+                                break
+
+                print(f"Filtered {len(disk_alarms)} disk_used_percent alarms from CWAgent/HCOPS")
             except Exception as e:
                 print(f"Failed to fetch CloudWatch alarms: {e}")
                 continue
 
+            # Evaluate alarms for this instance
             for alarm in disk_alarms:
                 alarm_name = alarm.get('AlarmName')
                 dimensions = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
@@ -83,7 +106,7 @@ def lambda_handler(event, context):
                 else:
                     print(f"  Path '{alarm_path}' not in required list")
 
-            # Evaluate result
+            # Determine compliance
             missing_paths = [path for path, found in path_alarms.items() if not found]
             if not missing_paths:
                 compliance_type = 'COMPLIANT'
@@ -102,6 +125,7 @@ def lambda_handler(event, context):
                 'OrderingTimestamp': timestamp
             })
 
+    # Submit evaluations to AWS Config
     if result_token != 'TESTMODE' and evaluations:
         try:
             config.put_evaluations(
