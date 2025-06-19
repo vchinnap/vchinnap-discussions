@@ -9,7 +9,6 @@ def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
 
-    # Get EC2s with tag ConfigRule=True
     try:
         response = ec2.describe_instances(
             Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
@@ -24,11 +23,10 @@ def lambda_handler(event, context):
             timestamp = instance['LaunchTime']
             platform = instance.get('PlatformDetails', '')
 
-            # ✅ Filter only Linux/UNIX
             if platform != 'Linux/UNIX':
                 continue
 
-            # ✅ Determine OS flavor from AMI name
+            # OS flavor detection
             image_id = instance['ImageId']
             try:
                 image = ec2.describe_images(ImageIds=[image_id])['Images'][0]
@@ -47,36 +45,48 @@ def lambda_handler(event, context):
                 print(f"⏭ Skipping unsupported AMI: {ami_name}")
                 continue
 
-            path_metrics = {path: False for path in required_paths}
-
-            # ✅ Use list_metrics() to check if disk_used_percent is being published
+            # Step 1: Get all metrics for disk_used_percent
+            found_paths = set()
             try:
                 paginator = cloudwatch.get_paginator('list_metrics')
                 for page in paginator.paginate(
                     Namespace='HCOPS/ADF',
                     MetricName='disk_used_percent',
-                    Dimensions=[
-                        {'Name': 'InstanceId', 'Value': instance_id}
-                    ]
+                    Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}]
                 ):
                     for metric in page['Metrics']:
-                        dims = {d['Name']: d['Value'] for d in metric.get('Dimensions', [])}
+                        dims = {d['Name']: d['Value'] for d in metric['Dimensions']}
                         path = dims.get('path')
-                        if path in path_metrics:
-                            path_metrics[path] = True
-                            print(f"✅ Metric found for {instance_id} at path: {path}")
+                        if path in required_paths:
+                            found_paths.add(path)
             except Exception as e:
-                print(f"❌ Error listing metrics for {instance_id}: {e}")
+                print(f"❌ Error listing metrics: {e}")
                 continue
 
-            # ✅ Evaluate compliance
-            missing_paths = [path for path, found in path_metrics.items() if not found]
+            # Step 2: Check if alarms exist for those paths
+            path_alarms = {path: False for path in required_paths}
+            try:
+                alarms = cloudwatch.describe_alarms(AlarmTypes=['MetricAlarm'])['MetricAlarms']
+                for alarm in alarms:
+                    if alarm.get('MetricName') != 'disk_used_percent' or alarm.get('Namespace') != 'HCOPS/ADF':
+                        continue
+                    dims = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
+                    if dims.get('InstanceId') == instance_id:
+                        path = dims.get('path')
+                        if path in found_paths:
+                            path_alarms[path] = True
+            except Exception as e:
+                print(f"❌ Error retrieving alarms: {e}")
+                continue
+
+            # Final compliance check
+            missing_paths = [p for p, has_alarm in path_alarms.items() if not has_alarm]
             if not missing_paths:
                 compliance_type = 'COMPLIANT'
-                annotation = f"{os_flavor}: All required disk_used_percent metrics are present."
+                annotation = f"{os_flavor}: Alarms present for all required paths."
             else:
                 compliance_type = 'NON_COMPLIANT'
-                annotation = f"{os_flavor}: Missing disk_used_percent metrics for: {', '.join(missing_paths)}"
+                annotation = f"{os_flavor}: Missing alarms for paths: {', '.join(missing_paths)}"
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::EC2::Instance',
@@ -86,13 +96,10 @@ def lambda_handler(event, context):
                 'OrderingTimestamp': timestamp
             })
 
-    # ✅ Submit evaluations to AWS Config
+    # Send evaluations
     if result_token != 'TESTMODE' and evaluations:
         try:
-            config.put_evaluations(
-                Evaluations=evaluations,
-                ResultToken=result_token
-            )
+            config.put_evaluations(Evaluations=evaluations, ResultToken=result_token)
             print("✅ Submitted evaluations to AWS Config")
         except Exception as e:
             print(f"❌ Error submitting evaluations: {e}")
