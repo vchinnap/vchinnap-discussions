@@ -62,7 +62,7 @@ def lambda_handler(event, context):
                 ):
                     for metric in page['Metrics']:
                         dims = {d['Name']: d['Value'] for d in metric['Dimensions']}
-                        path = dims.get('path')
+                        path = dims.get('path') or dims.get('device')
                         if path in required_paths:
                             found_paths.add(path)
                             print(f"Metric found for path: {path}")
@@ -86,7 +86,7 @@ def lambda_handler(event, context):
 
                     dims = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
                     alarm_instance = dims.get('InstanceId')
-                    alarm_path = dims.get('path')
+                    alarm_path = dims.get('path') or dims.get('device')
 
                     if alarm_instance == instance_id and alarm_path in path_alarms:
                         path_alarms[alarm_path] = True
