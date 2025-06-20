@@ -1,19 +1,25 @@
 {
-  "diskUsedPercentRemediation": "Creates or updates a CloudWatch alarm for the 'disk_used_percent' metric on Linux EC2 instances. Ensures disk usage thresholds are monitored and alerts are triggered when usage exceeds 80%.",
+  "diskUsedPercentRemediation": "Creates or updates a CloudWatch alarm for the 'disk_used_percent' metric on Linux EC2 instances.\nEnsures disk usage thresholds are monitored and alerts are triggered when usage exceeds 80%.",
 
-  "statusCheckRemediation": "Creates or updates a CloudWatch alarm for the 'StatusCheckFailed' metric on Windows and Linux EC2 instances. Ensures instance and system health checks are monitored and alerted when failures occur.",
+  "windowsDiskUsedPercentRemediation": "Creates or updates a CloudWatch alarm for the 'disk_used_percent' metric on Windows EC2 instances.\nEnsures disk space usage is monitored and alerts are triggered if thresholds are breached.",
 
-  "cpuUtilizationRemediation": "Creates or updates a CloudWatch alarm for the 'CPUUtilization' metric on Windows and Linux EC2 instances. Ensures high CPU usage is detected and alerts are triggered for sustained utilization above threshold.",
+  "cpuUtilizationRemediation": "Creates or updates a CloudWatch alarm for the 'CPUUtilization' metric on Windows and Linux EC2 instances.\nEnsures high CPU usage is detected and alerts are triggered for sustained utilization above threshold.",
 
-  "ebsOptimizedRemediation": "Modifies the EC2 instance to enable EBS-optimized mode, improving performance and reducing latency for EBS I/O where supported by the instance type.",
+  "statusCheckRemediation": "Creates or updates a CloudWatch alarm for the 'StatusCheckFailed' metric on Windows and Linux EC2 instances.\nEnsures instance and system health checks are monitored and alerted when failures occur.",
 
-  "detailedMonitoringRemediation": "Enables detailed monitoring on EC2 instances to provide high-resolution 1-minute metrics for better observability and faster alerting.",
+  "memoryUtilizationRemediation": "Creates or updates a CloudWatch alarm for memory usage using CloudWatch Agent custom metrics.\nEnsures alerting when memory utilization exceeds defined thresholds on EC2 instances.",
 
-  "ssmAgentRemediation": "Installs, starts, or reconfigures the AWS Systems Manager agent on EC2 instances to ensure they're managed via Systems Manager. It validates agent presence and operational status.",
+  "ssmAgentRemediation": "Installs, starts, or reconfigures the AWS Systems Manager agent on EC2 instances.\nEnsures instances are manageable via Systems Manager and that the agent is running.",
 
-  "volumeInUseRemediation": "Checks unattached EBS volumes and flags them for review or clean-up. Helps prevent resource sprawl and unnecessary storage costs.",
+  "detailedMonitoringRemediation": "Enables detailed monitoring on EC2 instances.\nProvides 1-minute metric granularity for enhanced observability and faster alerting.",
 
-  "windowsDiskUsedPercentRemediation": "Creates or updates a CloudWatch alarm for the 'disk_used_percent' metric on Windows EC2 instances. Ensures disk space usage is monitored and alerts are triggered if thresholds are breached.",
+  "ebsOptimizedRemediation": "Modifies the EC2 instance to enable EBS-optimized mode where supported.\nImproves performance and reduces latency for attached EBS volumes.",
 
-  "memoryUtilizationRemediation": "Creates or updates a CloudWatch alarm for memory usage on EC2 instances using custom metrics pushed via CloudWatch Agent. Ensures alerting when memory usage exceeds defined thresholds."
+  "volumeInUseRemediation": "Identifies unattached EBS volumes and flags them for cleanup.\nHelps prevent resource sprawl and reduce unnecessary storage costs.",
+
+  "logicalDiskFreeSpaceRemediation": "Configures a CloudWatch alarm using custom metrics to monitor logical disk free space on Windows EC2 instances.\nTriggers alerts when available disk space falls below a defined threshold.",
+
+  "windowsAvailableMemoryRemediation": "Creates a CloudWatch alarm using custom metrics to track available memory in bytes on Windows EC2 instances.\nAlerts are triggered when memory falls below operational thresholds.",
+
+  "ec2BackupPlanProtectionRemediation": "Adds EC2 instances to a Backup Plan using AWS Backup.\nEnsures resources are protected by scheduled automated backup policies."
 }
