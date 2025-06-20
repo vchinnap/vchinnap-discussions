@@ -1,0 +1,19 @@
+{
+  "diskUsedPercentRemediation": "Creates or updates a CloudWatch alarm for the 'disk_used_percent' metric on Linux EC2 instances. Ensures disk usage thresholds are monitored and alerts are triggered when usage exceeds 80%.",
+
+  "statusCheckRemediation": "Creates or updates a CloudWatch alarm for the 'StatusCheckFailed' metric on Windows and Linux EC2 instances. Ensures instance and system health checks are monitored and alerted when failures occur.",
+
+  "cpuUtilizationRemediation": "Creates or updates a CloudWatch alarm for the 'CPUUtilization' metric on Windows and Linux EC2 instances. Ensures high CPU usage is detected and alerts are triggered for sustained utilization above threshold.",
+
+  "ebsOptimizedRemediation": "Modifies the EC2 instance to enable EBS-optimized mode, improving performance and reducing latency for EBS I/O where supported by the instance type.",
+
+  "detailedMonitoringRemediation": "Enables detailed monitoring on EC2 instances to provide high-resolution 1-minute metrics for better observability and faster alerting.",
+
+  "ssmAgentRemediation": "Installs, starts, or reconfigures the AWS Systems Manager agent on EC2 instances to ensure they're managed via Systems Manager. It validates agent presence and operational status.",
+
+  "volumeInUseRemediation": "Checks unattached EBS volumes and flags them for review or clean-up. Helps prevent resource sprawl and unnecessary storage costs.",
+
+  "windowsDiskUsedPercentRemediation": "Creates or updates a CloudWatch alarm for the 'disk_used_percent' metric on Windows EC2 instances. Ensures disk space usage is monitored and alerts are triggered if thresholds are breached.",
+
+  "memoryUtilizationRemediation": "Creates or updates a CloudWatch alarm for memory usage on EC2 instances using custom metrics pushed via CloudWatch Agent. Ensures alerting when memory usage exceeds defined thresholds."
+}
