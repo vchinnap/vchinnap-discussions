@@ -121,13 +121,13 @@ export class ConfigRuleWithRemediationConstruct extends Construct {
       const customRule = new config.CustomRule(this, `${ruleName}-ConfigRule`, {
         configRuleName: ruleName,
         description,
-        ...(isPeriodic !== undefined || maximumExecutionFrequency !== undefined
+        ...(maximumExecutionFrequency !== undefined
         ? {
-            periodic: isPeriodic ?? true,
+            periodic: true,
             maximumExecutionFrequency: maximumExecutionFrequency ?? config.MaximumExecutionFrequency.TWENTY_FOUR_HOURS
           }
         : {
-            periodic: false
+            configurationChanges: true
         }),
         lambdaFunction: this.evaluationLambda.lambdaFunction,
         ruleScope
