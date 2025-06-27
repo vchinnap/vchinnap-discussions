@@ -1,185 +1,147 @@
 import boto3
+import json
 from datetime import datetime, timezone
 
 config = boto3.client('config')
 ec2 = boto3.client('ec2')
 cloudwatch = boto3.client('cloudwatch')
 
+def check_metric_exists(instance_id):
+    try:
+        metrics = cloudwatch.list_metrics(
+            Namespace='HCOPS/ADF',
+            MetricName='disk_used_percent',
+            Dimensions=[
+                {'Name': 'InstanceId', 'Value': instance_id}
+            ]
+        ).get('Metrics', [])
+        return bool(metrics)
+    except Exception as e:
+        print(f"⚠️ Error checking metric for {instance_id}: {e}")
+        return False
+
 def lambda_handler(event, context):
     result_token = event.get('resultToken', 'TESTMODE')
     evaluations = []
 
-    # Get EC2s with ConfigRule=True tag
-    response = ec2.describe_instances(
-        Filters=[
-            {'Name': 'tag:ConfigRule', 'Values': ['True']}
-        ]
-    )
+    try:
+        instances = ec2.describe_instances(
+            Filters=[{'Name': 'tag:ConfigRule', 'Values': ['True']}]
+        )
+    except Exception as e:
+        print(f"❌ Error fetching EC2 instances: {e}")
+        return
 
-    for reservation in response['Reservations']:
+    instance_ids = []
+    instance_map = {}
+
+    for reservation in instances['Reservations']:
         for instance in reservation['Instances']:
             instance_id = instance['InstanceId']
+            platform = instance.get('PlatformDetails', '')
             timestamp = instance['LaunchTime']
-            image_id = instance['ImageId']
 
-            # Use ImageId to detect OS flavor
-            try:
-                image_details = ec2.describe_images(ImageIds=[image_id])['Images'][0]
-                ami_name = image_details.get('Name', '').lower()
-            except Exception as e:
-                print(f"Error retrieving image details for {image_id}: {e}")
+            if platform != 'Linux/UNIX':
                 continue
 
-            # Determine OS and required paths
+            image_id = instance.get('ImageId')
+            try:
+                image = ec2.describe_images(ImageIds=[image_id])['Images'][0]
+                ami_name = image.get('Name', '').lower()
+            except Exception as e:
+                print(f"❌ Error fetching AMI for {instance_id}: {e}")
+                continue
+
             if 'rhel' in ami_name or 'redhat' in ami_name:
-                os_flavor = 'Red Hat Enterprise Linux'
-                required_paths = ['/', '/var', '/tmp', '/var/log', '/var/log/audit', '/home', '/opt', '/usr']
+                os_flavor = 'Red Hat Linux'
+                required_paths = ['/var', '/tmp', '/var/log', '/var/log/audit', '/home', '/opt', '/usr']
             elif 'amzn' in ami_name or 'al2' in ami_name:
                 os_flavor = 'Amazon Linux'
                 required_paths = ['/']
             else:
-                continue  # Skip unsupported flavors
-
-            path_alarms = {path: False for path in required_paths}
-
-            # Fetch CloudWatch alarms
-            try:
-                alarms = cloudwatch.describe_alarms(AlarmTypes=['MetricAlarm'])['MetricAlarms']
-                for alarm in alarms:
-                    dimensions = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
-                    if dimensions.get('InstanceId') != instance_id:
-                        continue
-                    if alarm.get('MetricName') == 'disk_used_percent':
-                        path = dimensions.get('path')
-                        if path in path_alarms:
-                            path_alarms[path] = True
-            except Exception as e:
-                print(f"Error retrieving alarms: {e}")
+                print(f"⚠️ Unsupported AMI: {ami_name} for instance {instance_id}")
                 continue
 
-            # Determine compliance
-            missing_paths = [path for path, found in path_alarms.items() if not found]
+            instance_ids.append(instance_id)
+            instance_map[instance_id] = {
+                "required_paths": required_paths,
+                "os_flavor": os_flavor,
+                "timestamp": timestamp
+            }
 
-            if not missing_paths:
-                compliance_type = 'COMPLIANT'
-                annotation = f"{os_flavor}: All required disk_used_percent alarms are present."
-            else:
-                compliance_type = 'NON_COMPLIANT'
-                annotation = f"{os_flavor}: Missing disk alarms for paths: {', '.join(missing_paths)}"
+    if not instance_ids:
+        print("ℹ️ No Linux EC2 instances found with ConfigRule=True.")
+        return
 
-            # Add evaluation
-            evaluations.append({
-                'ComplianceResourceType': 'AWS::EC2::Instance',
-                'ComplianceResourceId': instance_id,
-                'ComplianceType': compliance_type,
-                'Annotation': annotation,
-                'OrderingTimestamp': timestamp
-            })
+    print(f"✅ Instances for evaluation: {instance_ids}")
 
-    # Submit evaluations to AWS Config
-    if result_token != 'TESTMODE' and evaluations:
-        config.put_evaluations(
-            Evaluations=evaluations,
-            ResultToken=result_token
-        )
+    try:
+        paginator = cloudwatch.get_paginator('describe_alarms')
+        alarm_pages = paginator.paginate()
+        all_alarms = []
+        for page in alarm_pages:
+            all_alarms.extend(page['MetricAlarms'])
+    except Exception as e:
+        print(f"❌ Error fetching alarms: {e}")
+        return
 
-    return {
-        'status': 'completed',
-        'evaluated': len(evaluations)
-    }
+    for instance_id in instance_ids:
+        print(f"\n🔍 Checking alarms for Instance ID: {instance_id}")
 
+        required_paths = instance_map[instance_id]['required_paths']
+        os_flavor = instance_map[instance_id]['os_flavor']
+        timestamp = instance_map[instance_id]['timestamp']
+        path_status = {path: False for path in required_paths}
 
+        metric_available = check_metric_exists(instance_id)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import boto3
-from datetime import datetime, timezone
-
-config = boto3.client('config')
-ec2 = boto3.client('ec2')
-cloudwatch = boto3.client('cloudwatch')
-
-def lambda_handler(event, context):
-    result_token = event.get('resultToken', 'TESTMODE')
-    evaluations = []
-
-    # Get all EC2s with ConfigRule=True tag
-    response = ec2.describe_instances(
-        Filters=[
-            {'Name': 'tag:ConfigRule', 'Values': ['True']}
-        ]
-    )
-
-    for reservation in response['Reservations']:
-        for instance in reservation['Instances']:
-            instance_id = instance['InstanceId']
-            timestamp = instance['LaunchTime']
-
-            # ✅ Filter only Linux/UNIX instances
-            platform_details = instance.get('PlatformDetails', '')
-            if platform_details != 'Linux/UNIX':
+        for alarm in all_alarms:
+            if alarm.get('MetricName') != 'disk_used_percent':
                 continue
 
-            # Default state: assume non-compliant
+            dims = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
+            if dims.get('InstanceId') != instance_id:
+                continue
+
+            path = dims.get('path')
+            if path in required_paths:
+                path_status[path] = True
+                print(f"✅ Matched: {alarm['AlarmName']} | Path: {path}")
+                print(json.dumps(alarm, indent=2, default=str))
+
+        missing_paths = [p for p, present in path_status.items() if not present]
+
+        if not metric_available:
             compliance_type = 'NON_COMPLIANT'
-            annotation_parts = []
+            annotation = f"{os_flavor}: disk_used_percent metric not found for instance {instance_id}"
+        elif missing_paths:
+            compliance_type = 'NON_COMPLIANT'
+            annotation = f"{os_flavor}: Alarms missing for paths: {', '.join(missing_paths)}"
+        else:
+            compliance_type = 'COMPLIANT'
+            annotation = f"{os_flavor}: All required disk_used_percent alarms are present."
 
-            # Required mount paths to monitor
-            required_paths = ['/', '/var', '/tmp', '/var/log', '/var/log/audit']
-            path_alarms = {path: False for path in required_paths}
+        print(f"📌 Evaluation: {instance_id} → {compliance_type}")
+        print(f"📝 Annotation: {annotation}")
 
-            # Fetch all alarms
-            alarms = cloudwatch.describe_alarms(AlarmTypes=['MetricAlarm'])['MetricAlarms']
-            for alarm in alarms:
-                dimensions = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
-                if dimensions.get('InstanceId') != instance_id:
-                    continue
+        evaluations.append({
+            'ComplianceResourceType': 'AWS::EC2::Instance',
+            'ComplianceResourceId': instance_id,
+            'ComplianceType': compliance_type,
+            'Annotation': annotation,
+            'OrderingTimestamp': timestamp
+        })
 
-                if alarm.get('MetricName') == 'disk_used_percent':
-                    path = dimensions.get('path')
-                    if path in path_alarms:
-                        path_alarms[path] = True
-
-            # Build annotation
-            missing_paths = [path for path, found in path_alarms.items() if not found]
-            if not missing_paths:
-                compliance_type = 'COMPLIANT'
-                annotation = "All required disk_used_percent alarms are present."
-            else:
-                annotation = f"Missing disk alarms for: {', '.join(missing_paths)}"
-
-            # Append result
-            evaluations.append({
-                'ComplianceResourceType': 'AWS::EC2::Instance',
-                'ComplianceResourceId': instance_id,
-                'ComplianceType': compliance_type,
-                'Annotation': annotation,
-                'OrderingTimestamp': timestamp
-            })
-
-    # Submit to AWS Config
+    # Submit results to AWS Config
     if result_token != 'TESTMODE' and evaluations:
-        config.put_evaluations(
-            Evaluations=evaluations,
-            ResultToken=result_token
-        )
+        try:
+            config.put_evaluations(
+                Evaluations=evaluations,
+                ResultToken=result_token
+            )
+            print("✅ Submitted evaluations to AWS Config")
+        except Exception as e:
+            print(f"❌ Error submitting evaluations: {e}")
 
     return {
         'status': 'completed',
