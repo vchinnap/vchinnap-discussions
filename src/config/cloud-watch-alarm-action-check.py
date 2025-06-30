@@ -1,5 +1,7 @@
 import boto3
+import time
 from datetime import datetime, timezone
+from botocore.exceptions import ClientError
 
 config = boto3.client('config')
 cloudwatch = boto3.client('cloudwatch')
@@ -16,18 +18,18 @@ def lambda_handler(event, context):
             alarm_name = alarm['AlarmName']
             alarm_arn = alarm['AlarmArn']
 
-            # ✅ Fetch tags for the alarm
+            # ✅ Filter: Only alarms tagged with ConfigRule=True
             try:
+                time.sleep(0.2)  # Slow down to avoid throttling
                 tag_response = cloudwatch.list_tags_for_resource(ResourceARN=alarm_arn)
                 tags = {tag['Key']: tag['Value'] for tag in tag_response.get('Tags', [])}
-
                 if tags.get('ConfigRule') != 'True':
                     continue
-            except Exception as e:
-                print(f"Could not fetch tags for {alarm_name}: {e}")
+            except ClientError as e:
+                print(f"❌ Error fetching tags for {alarm_name}: {e}")
                 continue
 
-            # ✅ Evaluate alarm actions
+            # ✅ Check for missing action states
             compliant = True
             annotation = []
 
@@ -50,7 +52,7 @@ def lambda_handler(event, context):
             })
 
     except Exception as e:
-        print(f"Error evaluating alarms: {e}")
+        print(f"❌ Error evaluating alarms: {e}")
 
     if result_token != 'TESTMODE' and evaluations:
         config.put_evaluations(
