@@ -97,7 +97,7 @@ import boto3
 from datetime import datetime, timezone
 
 TAG_KEY = 'ConfigRule'
-TAG_VALUE = 'Rule'
+TAG_VALUE = 'True'
 
 cloudwatch = boto3.client('cloudwatch')
 config = boto3.client('config')
@@ -133,7 +133,8 @@ def get_alarms_with_specific_tag_and_actions():
                         'AlarmName': alarm_name,
                         'AlarmArn': alarm_arn,
                         'ComplianceType': 'COMPLIANT' if compliant else 'NON_COMPLIANT',
-                        'Annotation': annotation
+                        'Annotation': annotation,
+                        'Timestamp': datetime.now(timezone.utc).isoformat()  # ✅ ISO format for JSON safety
                     })
             except Exception as e:
                 print(f"⚠️ Could not fetch tags for alarm {alarm_name}: {e}")
@@ -142,7 +143,7 @@ def get_alarms_with_specific_tag_and_actions():
 
 def lambda_handler(event, context):
     print(f"🔍 Looking for CloudWatch alarms tagged {TAG_KEY}={TAG_VALUE}")
-    result_token = event.get('resultToken', 'TESTMODE')  # Config passes this, SSM doesn't
+    result_token = event.get('resultToken', 'TESTMODE')  # Ignore for SSM test
     alarms = get_alarms_with_specific_tag_and_actions()
     evaluations = []
 
@@ -152,16 +153,21 @@ def lambda_handler(event, context):
             'ComplianceResourceId': alarm['AlarmName'],
             'ComplianceType': alarm['ComplianceType'],
             'Annotation': alarm['Annotation'],
-            'OrderingTimestamp': datetime.now(timezone.utc)
+            'OrderingTimestamp': alarm['Timestamp']  # Already ISO formatted
         })
 
         print(f"📝 {alarm['AlarmName']}: {alarm['ComplianceType']} → {alarm['Annotation']}")
 
-    # Commented out to allow testing via SSM Automation
+    # ✅ Commented for SSM testing (safe)
     # if result_token != 'TESTMODE' and evaluations:
     #     try:
     #         config.put_evaluations(
-    #             Evaluations=evaluations,
+    #             Evaluations=[
+    #                 {
+    #                     **e,
+    #                     'OrderingTimestamp': datetime.fromisoformat(e['OrderingTimestamp'])  # Convert back if needed
+    #                 } for e in evaluations
+    #             ],
     #             ResultToken=result_token
     #         )
     #         print("✅ Submitted evaluations to AWS Config")
