@@ -1,59 +1,38 @@
 import boto3
 
 TAG_KEY = 'ConfigRule'
-TAG_VALUE = 'True'
+TAG_VALUE = 'Rule'
 
-def get_tagged_instance_ids():
-    resource_client = boto3.client('resourcegroupstaggingapi')
-    instance_ids = []
-
-    paginator = resource_client.get_paginator('get_resources')
-    for page in paginator.paginate(
-        TagFilters=[{'Key': TAG_KEY, 'Values': [TAG_VALUE]}],
-        ResourceTypeFilters=['ec2:instance']
-    ):
-        for resource in page['ResourceTagMappingList']:
-            arn = resource['ResourceARN']
-            instance_id = arn.split('/')[-1]
-            instance_ids.append(instance_id)
-
-    return instance_ids
-
-def get_alarms_for_instances(instance_ids):
+def get_alarms_with_specific_tag():
     cloudwatch = boto3.client('cloudwatch')
-    paginator = cloudwatch.get_paginator('describe_alarms')
     matching_alarms = []
 
+    paginator = cloudwatch.get_paginator('describe_alarms')
     for page in paginator.paginate():
         for alarm in page['MetricAlarms']:
-            for dim in alarm.get('Dimensions', []):
-                if dim['Name'] == 'InstanceId' and dim['Value'] in instance_ids:
-                    matching_alarms.append(alarm['AlarmName'])
-                    break
+            alarm_arn = alarm['AlarmArn']
+            alarm_name = alarm['AlarmName']
 
-    return list(set(matching_alarms))
+            try:
+                tags_response = cloudwatch.list_tags_for_resource(ResourceARN=alarm_arn)
+                tags = {tag['Key']: tag['Value'] for tag in tags_response.get('Tags', [])}
+                if tags.get(TAG_KEY) == TAG_VALUE:
+                    matching_alarms.append(alarm_name)
+            except Exception as e:
+                print(f"⚠️ Could not fetch tags for alarm {alarm_name}: {e}")
+
+    return matching_alarms
 
 def lambda_handler(event, context):
-    print(f"🔍 Looking for EC2 instances with tag {TAG_KEY}={TAG_VALUE}")
-    instance_ids = get_tagged_instance_ids()
-
-    if not instance_ids:
-        print("❌ No tagged EC2 instances found.")
-        return {
-            "status": "no_instances",
-            "alarms": []
-        }
-
-    print(f"✅ Tagged EC2 Instance IDs: {instance_ids}")
-
-    alarms = get_alarms_for_instances(instance_ids)
+    print(f"🔍 Looking for CloudWatch alarms tagged {TAG_KEY}={TAG_VALUE}")
+    alarms = get_alarms_with_specific_tag()
 
     if alarms:
-        print("📢 Alarms matching tagged EC2 instances:")
+        print("📢 Alarms with the specified tag:")
         for name in alarms:
             print(f"- {name}")
     else:
-        print("⚠️ No alarms found for these instances.")
+        print("⚠️ No alarms found with the specified tag.")
 
     return {
         "status": "completed",
