@@ -1,28 +1,23 @@
 {
   "schemaVersion": "0.3",
-  "description": "Attach ALARM action to CloudWatch alarm if missing.",
-  "assumeRole": "{{ AutomationAssumeRole }}",
+  "description": "Enables CloudWatch alarm actions for ALARM, INSUFFICIENT_DATA, or OK states if disabled.",
+  "assumeRole": "{{AutomationAssumeRole}}",
   "parameters": {
     "AlarmName": {
       "type": "String"
     },
     "AutomationAssumeRole": {
       "type": "String"
-    },
-    "ActionArn": {
-      "type": "String",
-      "default": "arn:aws:sns:us-east-1:123456789012:CriticalAlertTopic"
     }
   },
   "mainSteps": [
     {
-      "name": "AttachAlarmAction",
+      "name": "enableAlarmActions",
       "action": "aws:executeAwsApi",
       "inputs": {
         "Service": "CloudWatch",
-        "Api": "PutAlarmActions",
-        "AlarmName": "{{ AlarmName }}",
-        "AlarmActions": ["{{ ActionArn }}"]
+        "Api": "EnableAlarmActions",
+        "AlarmNames": ["{{AlarmName}}"]
       }
     }
   ]

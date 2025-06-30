@@ -1,13 +1,13 @@
 new ConfigRuleWithRemediationConstruct(this, `${ruleName}-configrule`, {
   ruleName,
-  description,
+  description: 'Checks if CloudWatch alarms have an action configured for the ALARM, INSUFFICIENT_DATA, or OK state.',
   type: 'managed',
   sourceIdentifier: config.ManagedRuleIdentifiers.CLOUDWATCH_ALARM_ACTION_CHECK,
 
   inputParameters: {
     alarmActionRequired: 'true',
-    insufficientDataActionRequired: 'false',
-    okActionRequired: 'false'
+    insufficientDataActionRequired: 'true',
+    okActionRequired: 'true'
   },
 
   rScope: {
@@ -27,9 +27,6 @@ new ConfigRuleWithRemediationConstruct(this, `${ruleName}-configrule`, {
       },
       AutomationAssumeRole: {
         StaticValue: { Values: [hcopsAutomationAssumeRole] }
-      },
-      ActionArn: {
-        StaticValue: { Values: ['arn:aws:sns:us-east-1:123456789012:CriticalAlertTopic'] }
       }
     }
   }
