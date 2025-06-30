@@ -93,7 +93,6 @@ def lambda_handler(event, context):
         "alarms": alarms
     }
 '''
-
 import boto3
 from datetime import datetime, timezone
 
@@ -143,7 +142,7 @@ def get_alarms_with_specific_tag_and_actions():
 
 def lambda_handler(event, context):
     print(f"🔍 Looking for CloudWatch alarms tagged {TAG_KEY}={TAG_VALUE}")
-    result_token = event.get('resultToken', 'TESTMODE')
+    result_token = event.get('resultToken', 'TESTMODE')  # Config passes this, SSM doesn't
     alarms = get_alarms_with_specific_tag_and_actions()
     evaluations = []
 
@@ -158,18 +157,21 @@ def lambda_handler(event, context):
 
         print(f"📝 {alarm['AlarmName']}: {alarm['ComplianceType']} → {alarm['Annotation']}")
 
-    if result_token != 'TESTMODE' and evaluations:
-        try:
-            config.put_evaluations(
-                Evaluations=evaluations,
-                ResultToken=result_token
-            )
-            print("✅ Submitted evaluations to AWS Config")
-        except Exception as e:
-            print(f"❌ Error submitting evaluations to AWS Config: {e}")
+    # Commented out to allow testing via SSM Automation
+    # if result_token != 'TESTMODE' and evaluations:
+    #     try:
+    #         config.put_evaluations(
+    #             Evaluations=evaluations,
+    #             ResultToken=result_token
+    #         )
+    #         print("✅ Submitted evaluations to AWS Config")
+    #     except Exception as e:
+    #         print(f"❌ Error submitting evaluations to AWS Config: {e}")
+
+    print("🧪 Test mode: Skipped AWS Config evaluation submission")
 
     return {
-        'status': 'completed',
-        'evaluated_count': len(evaluations),
-        'evaluations': evaluations
+        "status": "completed",
+        "evaluated_count": len(evaluations),
+        "evaluations": evaluations
     }
