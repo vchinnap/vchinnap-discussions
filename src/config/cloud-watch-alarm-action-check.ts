@@ -1,20 +1,24 @@
-new ConfigRuleWithRemediationConstruct(this, 'CloudWatchAlarmStrictCheckRule', {
-  ruleName: 'cloudwatch-alarm-action-check',
-  description: 'Checks CloudWatch Alarms for required ALARM state actions with approved ARNs.',
+new ConfigRuleWithRemediationConstruct(this, `${ruleName}-configrule`, {
+  ruleName,
+  description,
   type: 'managed',
   sourceIdentifier: config.ManagedRuleIdentifiers.CLOUDWATCH_ALARM_ACTION_CHECK,
+
   inputParameters: {
     alarmActionRequired: 'true',
     insufficientDataActionRequired: 'false',
-    okActionRequired: 'false',
-    action1: 'arn:aws:sns:us-east-1:123456789012:CriticalAlertTopic',
-    action2: 'arn:aws:autoscaling:us-east-1:123456789012:scalingPolicy:abc:autoScalingGroupName/my-asg'
+    okActionRequired: 'false'
   },
+
   rScope: {
     tagKey: 'ConfigRule',
     tagValue: 'True'
   },
+
   lambdaRoleArn: hcopsAutomationAssumeRole,
+  tags: taggingVars,
+  automatic: false,
+
   remediationDoc: {
     documentType: 'Automation',
     parameters: {
