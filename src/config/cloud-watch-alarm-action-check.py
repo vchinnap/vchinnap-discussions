@@ -47,14 +47,14 @@ def lambda_handler(event, context):
                 }
 
             elif platform_details == 'Linux/UNIX':
-                # General metrics
                 metric_requirements = {
                     'CPUUtilization': False,
                     'mem_used_percent': False,
+                    'disk_used_percent': False,  # ✅ Global check added
                     'StatusCheckFailed': False
                 }
 
-                # Detect OS flavor and add disk_used_percent path checks
+                # Detect OS flavor and set disk paths
                 image_id = instance.get('ImageId')
                 try:
                     image = ec2.describe_images(ImageIds=[image_id])['Images'][0]
@@ -77,22 +77,21 @@ def lambda_handler(event, context):
             else:
                 continue  # Skip unsupported OS
 
-            # Match all alarms for this instance
+            # Match alarms for this instance
             for alarm in all_alarms:
                 dims = {d['Name']: d['Value'] for d in alarm.get('Dimensions', [])}
                 if dims.get('InstanceId') != instance_id:
                     continue
 
                 metric = alarm.get('MetricName')
+                path = dims.get('path')
+                disk = dims.get('LogicalDiskName')
 
-                # Windows disk check
+                # Determine metric key
                 if metric == 'LogicalDisk % Free Space':
-                    disk = dims.get('LogicalDiskName')
                     metric_key = f"{metric} {disk}" if disk else None
-                # Linux disk path check
                 elif metric == 'disk_used_percent':
-                    path = dims.get('path')
-                    metric_key = metric
+                    metric_key = 'disk_used_percent'  # ✅ global key
                 else:
                     metric_key = metric
 
@@ -106,21 +105,30 @@ def lambda_handler(event, context):
 
                 if platform_details == 'Linux/UNIX' and metric == 'disk_used_percent' and path in disk_path_requirements:
                     if all_actions_present:
-                        disk_path_requirements[path] = True
+                        disk_path_requirements[path] = "OK"
                     else:
-                        print(f"⚠️ Alarm for path {path} on {instance_id} is missing one or more actions.")
+                        disk_path_requirements[path] = "MISSING_ACTIONS"
 
-            # Final compliance decision
+            # Evaluate compliance
             missing_metrics = [m for m, ok in metric_requirements.items() if not ok]
-            missing_paths = [p for p, ok in disk_path_requirements.items() if not ok]
+            missing_paths = []
+            missing_actions_paths = []
 
-            if missing_metrics or missing_paths:
+            for path, status in disk_path_requirements.items():
+                if status is False:
+                    missing_paths.append(path)
+                elif status == "MISSING_ACTIONS":
+                    missing_actions_paths.append(path)
+
+            if missing_metrics or missing_paths or missing_actions_paths:
                 compliance_type = 'NON_COMPLIANT'
                 messages = []
                 if missing_metrics:
                     messages.append(f"Missing alarms or actions for: {', '.join(missing_metrics)}")
                 if missing_paths:
                     messages.append(f"Missing disk alarms for paths: {', '.join(missing_paths)}")
+                if missing_actions_paths:
+                    messages.append(f"Disk alarms missing actions for paths: {', '.join(missing_actions_paths)}")
                 annotation = " | ".join(messages)
             else:
                 compliance_type = 'COMPLIANT'
