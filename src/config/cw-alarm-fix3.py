@@ -12,7 +12,7 @@ config = boto3.client('config', config=boto_config)
 
 MAX_CONFIG_BATCH_SIZE = 100
 
-# Only evaluate alarms with these metrics
+# Expected metric coverage (for validation)
 ALLOWED_METRICS = [
     'disk_used_percent',
     'mem_used_percent',
@@ -47,12 +47,16 @@ def lambda_handler(event, context):
         print("No instances found with tag ConfigRule=True.")
         return {"message": "No matching EC2 instances."}
 
-    print(f"Instance IDs with ConfigRule=True: {instance_ids}")
+    print("=== All EC2 Instances with tag ConfigRule=True ===")
+    for instance_id in instance_ids:
+        print(f"- {instance_id}")
 
     evaluations = []
     total_alarms_matched = 0
     total_alarms_skipped = 0
-    instance_alarm_count = defaultdict(int)
+
+    # instance_id -> metric_name -> count
+    metric_instance_map = defaultdict(lambda: defaultdict(int))
 
     try:
         paginator = cloudwatch.get_paginator('describe_alarms')
@@ -81,8 +85,9 @@ def lambda_handler(event, context):
                 total_alarms_skipped += 1
                 continue
 
+            # Track metric presence per instance
+            metric_instance_map[instance_id][metric_name] += 1
             total_alarms_matched += 1
-            instance_alarm_count[instance_id] += 1
 
             print(f"Matched alarm '{alarm_name}' for instance {instance_id} with metric '{metric_name}'")
 
@@ -125,9 +130,17 @@ def lambda_handler(event, context):
 
         print(f"Submitted {len(evaluations)} evaluations to AWS Config.")
 
-    print("=== Alarm Count per Instance (only allowed metrics) ===")
-    for instance_id, count in instance_alarm_count.items():
-        print(f"{instance_id}: {count} alarms")
+    # Print alarm summary
+    print("\n=== Alarm Coverage Report ===")
+    for instance_id in instance_ids:
+        print(f"\nInstance: {instance_id}")
+        found_metrics = set(metric_instance_map[instance_id].keys())
+        for metric in ALLOWED_METRICS:
+            count = metric_instance_map[instance_id][metric]
+            if count > 0:
+                print(f"  ✅ {metric}: {count} alarms")
+            else:
+                print(f"  ❌ {metric}: 0 alarms (MISSING)")
 
     return {
         "status": "completed",
