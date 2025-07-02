@@ -1,5 +1,6 @@
 import boto3
 import botocore
+from collections import defaultdict
 
 boto_config = botocore.config.Config(
     retries={'max_attempts': 5, 'mode': 'standard'}
@@ -11,7 +12,7 @@ config = boto3.client('config', config=boto_config)
 
 MAX_CONFIG_BATCH_SIZE = 100
 
-# Allowed metric names to evaluate
+# Only evaluate alarms with these metrics
 ALLOWED_METRICS = [
     'disk_used_percent',
     'mem_used_percent',
@@ -46,9 +47,12 @@ def lambda_handler(event, context):
         print("No instances found with tag ConfigRule=True.")
         return {"message": "No matching EC2 instances."}
 
+    print(f"Instance IDs with ConfigRule=True: {instance_ids}")
+
     evaluations = []
     total_alarms_matched = 0
     total_alarms_skipped = 0
+    instance_alarm_count = defaultdict(int)
 
     try:
         paginator = cloudwatch.get_paginator('describe_alarms')
@@ -58,27 +62,29 @@ def lambda_handler(event, context):
 
         print(f"Total alarms fetched from CloudWatch: {len(all_alarms)}")
 
-        # Loop through all alarms once, check if they are for any instance
         for alarm in all_alarms:
+            alarm_name = alarm['AlarmName']
             metric_name = alarm.get('MetricName')
+            dimensions = alarm.get('Dimensions', [])
+
             if metric_name not in ALLOWED_METRICS:
                 total_alarms_skipped += 1
                 continue
 
-            dimensions = alarm.get('Dimensions', [])
             instance_id = None
             for d in dimensions:
                 if d.get('Name') == 'InstanceId':
                     instance_id = d.get('Value')
                     break
 
-            if instance_id is None or instance_id not in instance_ids:
+            if not instance_id or instance_id not in instance_ids:
                 total_alarms_skipped += 1
                 continue
 
-            print(f"Matched alarm '{alarm['AlarmName']}' for instance {instance_id} with metric '{metric_name}'")
-
             total_alarms_matched += 1
+            instance_alarm_count[instance_id] += 1
+
+            print(f"Matched alarm '{alarm_name}' for instance {instance_id} with metric '{metric_name}'")
 
             has_alarm = bool(alarm.get('AlarmActions'))
             has_ok = bool(alarm.get('OKActions'))
@@ -97,7 +103,7 @@ def lambda_handler(event, context):
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::CloudWatch::Alarm',
-                'ComplianceResourceId': alarm['AlarmName'],
+                'ComplianceResourceId': alarm_name,
                 'ComplianceType': compliance_type,
                 'Annotation': annotation,
                 'OrderingTimestamp': alarm['AlarmConfigurationUpdatedTimestamp']
@@ -107,7 +113,6 @@ def lambda_handler(event, context):
         print(f"Error during alarm evaluation: {e}")
         return {"error": str(e)}
 
-    # Submit evaluations to AWS Config
     if result_token != 'TESTMODE' and evaluations:
         for chunk in chunk_evaluations(evaluations, MAX_CONFIG_BATCH_SIZE):
             try:
@@ -119,6 +124,10 @@ def lambda_handler(event, context):
                 print(f"Failed to submit evaluation chunk: {e}")
 
         print(f"Submitted {len(evaluations)} evaluations to AWS Config.")
+
+    print("=== Alarm Count per Instance (only allowed metrics) ===")
+    for instance_id, count in instance_alarm_count.items():
+        print(f"{instance_id}: {count} alarms")
 
     return {
         "status": "completed",
