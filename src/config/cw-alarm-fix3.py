@@ -1,7 +1,6 @@
 import boto3
 import botocore
 
-# Retry-safe config
 boto_config = botocore.config.Config(
     retries={'max_attempts': 5, 'mode': 'standard'}
 )
@@ -11,6 +10,7 @@ cloudwatch = boto3.client('cloudwatch', config=boto_config)
 config = boto3.client('config', config=boto_config)
 
 MAX_CONFIG_BATCH_SIZE = 100
+ALLOWED_METRICS = ['disk_used_percent', 'CPUUtilization', 'StatusCheckFailed']
 
 def get_config_rule_instance_ids():
     instance_ids = []
@@ -41,7 +41,6 @@ def lambda_handler(event, context):
     total_alarms_matched = 0
 
     try:
-        # Fetch all alarms
         paginator = cloudwatch.get_paginator('describe_alarms')
         all_alarms = []
         for page in paginator.paginate(AlarmTypes=['MetricAlarm']):
@@ -52,13 +51,13 @@ def lambda_handler(event, context):
         for instance_id in instance_ids:
             matching_alarms = [
                 alarm for alarm in all_alarms
-                if any(
+                if alarm.get('MetricName') in ALLOWED_METRICS and any(
                     d.get('Name') == 'InstanceId' and d.get('Value') == instance_id
                     for d in alarm.get('Dimensions', [])
                 )
             ]
 
-            print(f"Instance {instance_id} has {len(matching_alarms)} alarms")
+            print(f"Instance {instance_id} has {len(matching_alarms)} relevant alarms")
 
             total_alarms_matched += len(matching_alarms)
 
@@ -91,7 +90,6 @@ def lambda_handler(event, context):
         print(f"Error during alarm evaluation: {e}")
         return {"error": str(e)}
 
-    # Submit in chunks
     if result_token != 'TESTMODE' and evaluations:
         for chunk in chunk_evaluations(evaluations, MAX_CONFIG_BATCH_SIZE):
             try:
