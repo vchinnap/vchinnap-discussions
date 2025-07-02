@@ -12,7 +12,7 @@ config = boto3.client('config', config=boto_config)
 
 MAX_CONFIG_BATCH_SIZE = 100
 
-# Expected metric coverage (for validation)
+# Expected metric coverage
 ALLOWED_METRICS = [
     'disk_used_percent',
     'mem_used_percent',
@@ -55,7 +55,7 @@ def lambda_handler(event, context):
     total_alarms_matched = 0
     total_alarms_skipped = 0
 
-    # instance_id -> metric_name -> count
+    # Track alarm coverage by instance and metric
     metric_instance_map = defaultdict(lambda: defaultdict(int))
 
     try:
@@ -85,7 +85,7 @@ def lambda_handler(event, context):
                 total_alarms_skipped += 1
                 continue
 
-            # Track metric presence per instance
+            # Record metric presence for this instance
             metric_instance_map[instance_id][metric_name] += 1
             total_alarms_matched += 1
 
@@ -97,14 +97,19 @@ def lambda_handler(event, context):
 
             if has_alarm and has_ok and has_insufficient:
                 compliance_type = 'COMPLIANT'
-                annotation = "All required alarm actions are configured."
+                annotation = f"Metric '{metric_name}' has all required alarm actions configured."
             else:
                 compliance_type = 'NON_COMPLIANT'
-                missing = []
-                if not has_alarm: missing.append("ALARM")
-                if not has_ok: missing.append("OK")
-                if not has_insufficient: missing.append("INSUFFICIENT_DATA")
-                annotation = f"Missing actions for: {', '.join(missing)}"
+                missing_parts = []
+                if not has_alarm:
+                    missing_parts.append("AlarmActions")
+                if not has_ok:
+                    missing_parts.append("OKActions")
+                if not has_insufficient:
+                    missing_parts.append("InsufficientDataActions")
+
+                missing_str = ', '.join(missing_parts)
+                annotation = f"Metric '{metric_name}' is missing: {missing_str}."
 
             evaluations.append({
                 'ComplianceResourceType': 'AWS::CloudWatch::Alarm',
@@ -130,13 +135,13 @@ def lambda_handler(event, context):
 
         print(f"Submitted {len(evaluations)} evaluations to AWS Config.")
 
-    # Print alarm summary
-    print("\n=== Alarm Coverage Report ===")
+    # Print per-instance metric coverage summary
+    print("\n=== Alarm Coverage per Instance and Metric ===")
     for instance_id in instance_ids:
         print(f"\nInstance: {instance_id}")
-        found_metrics = set(metric_instance_map[instance_id].keys())
+        found_metrics = metric_instance_map[instance_id]
         for metric in ALLOWED_METRICS:
-            count = metric_instance_map[instance_id][metric]
+            count = found_metrics.get(metric, 0)
             if count > 0:
                 print(f"  ✅ {metric}: {count} alarms")
             else:
