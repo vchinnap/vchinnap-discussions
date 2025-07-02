@@ -19,7 +19,8 @@ ALLOWED_METRICS = [
     'CPUUtilization',
     'StatusCheckFailed',
     'Memory Available Bytes',
-    'LogicalDisk % Free Space'
+    'LogicalDisk % Free Space',
+    'DISK_FREE'
 ]
 
 def get_config_rule_instance_ids():
