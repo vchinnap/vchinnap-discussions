@@ -10,7 +10,16 @@ cloudwatch = boto3.client('cloudwatch', config=boto_config)
 config = boto3.client('config', config=boto_config)
 
 MAX_CONFIG_BATCH_SIZE = 100
-ALLOWED_METRICS = ['disk_used_percent', 'CPUUtilization', 'StatusCheckFailed']
+
+# Allowed metric names to evaluate
+ALLOWED_METRICS = [
+    'disk_used_percent',
+    'mem_used_percent',
+    'CPUUtilization',
+    'StatusCheckFailed',
+    'Memory Available Bytes',
+    'LogicalDisk % Free Space'
+]
 
 def get_config_rule_instance_ids():
     instance_ids = []
@@ -39,6 +48,7 @@ def lambda_handler(event, context):
 
     evaluations = []
     total_alarms_matched = 0
+    total_alarms_skipped = 0
 
     try:
         paginator = cloudwatch.get_paginator('describe_alarms')
@@ -48,48 +58,56 @@ def lambda_handler(event, context):
 
         print(f"Total alarms fetched from CloudWatch: {len(all_alarms)}")
 
-        for instance_id in instance_ids:
-            matching_alarms = [
-                alarm for alarm in all_alarms
-                if alarm.get('MetricName') in ALLOWED_METRICS and any(
-                    d.get('Name') == 'InstanceId' and d.get('Value') == instance_id
-                    for d in alarm.get('Dimensions', [])
-                )
-            ]
+        # Loop through all alarms once, check if they are for any instance
+        for alarm in all_alarms:
+            metric_name = alarm.get('MetricName')
+            if metric_name not in ALLOWED_METRICS:
+                total_alarms_skipped += 1
+                continue
 
-            print(f"Instance {instance_id} has {len(matching_alarms)} relevant alarms")
+            dimensions = alarm.get('Dimensions', [])
+            instance_id = None
+            for d in dimensions:
+                if d.get('Name') == 'InstanceId':
+                    instance_id = d.get('Value')
+                    break
 
-            total_alarms_matched += len(matching_alarms)
+            if instance_id is None or instance_id not in instance_ids:
+                total_alarms_skipped += 1
+                continue
 
-            for alarm in matching_alarms:
-                alarm_name = alarm['AlarmName']
-                has_alarm = bool(alarm.get('AlarmActions'))
-                has_ok = bool(alarm.get('OKActions'))
-                has_insufficient = bool(alarm.get('InsufficientDataActions'))
+            print(f"Matched alarm '{alarm['AlarmName']}' for instance {instance_id} with metric '{metric_name}'")
 
-                if has_alarm and has_ok and has_insufficient:
-                    compliance_type = 'COMPLIANT'
-                    annotation = "All required alarm actions are configured."
-                else:
-                    compliance_type = 'NON_COMPLIANT'
-                    missing = []
-                    if not has_alarm: missing.append("ALARM")
-                    if not has_ok: missing.append("OK")
-                    if not has_insufficient: missing.append("INSUFFICIENT_DATA")
-                    annotation = f"Missing actions for: {', '.join(missing)}"
+            total_alarms_matched += 1
 
-                evaluations.append({
-                    'ComplianceResourceType': 'AWS::CloudWatch::Alarm',
-                    'ComplianceResourceId': alarm_name,
-                    'ComplianceType': compliance_type,
-                    'Annotation': annotation,
-                    'OrderingTimestamp': alarm['AlarmConfigurationUpdatedTimestamp']
-                })
+            has_alarm = bool(alarm.get('AlarmActions'))
+            has_ok = bool(alarm.get('OKActions'))
+            has_insufficient = bool(alarm.get('InsufficientDataActions'))
+
+            if has_alarm and has_ok and has_insufficient:
+                compliance_type = 'COMPLIANT'
+                annotation = "All required alarm actions are configured."
+            else:
+                compliance_type = 'NON_COMPLIANT'
+                missing = []
+                if not has_alarm: missing.append("ALARM")
+                if not has_ok: missing.append("OK")
+                if not has_insufficient: missing.append("INSUFFICIENT_DATA")
+                annotation = f"Missing actions for: {', '.join(missing)}"
+
+            evaluations.append({
+                'ComplianceResourceType': 'AWS::CloudWatch::Alarm',
+                'ComplianceResourceId': alarm['AlarmName'],
+                'ComplianceType': compliance_type,
+                'Annotation': annotation,
+                'OrderingTimestamp': alarm['AlarmConfigurationUpdatedTimestamp']
+            })
 
     except Exception as e:
         print(f"Error during alarm evaluation: {e}")
         return {"error": str(e)}
 
+    # Submit evaluations to AWS Config
     if result_token != 'TESTMODE' and evaluations:
         for chunk in chunk_evaluations(evaluations, MAX_CONFIG_BATCH_SIZE):
             try:
@@ -105,5 +123,7 @@ def lambda_handler(event, context):
     return {
         "status": "completed",
         "instances_evaluated": len(instance_ids),
-        "alarms_evaluated": total_alarms_matched
+        "alarms_matched": total_alarms_matched,
+        "alarms_skipped": total_alarms_skipped,
+        "evaluations_submitted": len(evaluations)
     }
