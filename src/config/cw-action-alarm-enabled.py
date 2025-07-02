@@ -56,7 +56,6 @@ def lambda_handler(event, context):
     total_alarms_matched = 0
     total_alarms_skipped = 0
 
-    # Track alarm coverage by instance and metric
     metric_instance_map = defaultdict(lambda: defaultdict(int))
 
     try:
@@ -86,14 +85,14 @@ def lambda_handler(event, context):
                 total_alarms_skipped += 1
                 continue
 
-            # Record metric presence for this instance
             metric_instance_map[instance_id][metric_name] += 1
             total_alarms_matched += 1
 
             print(f"Matched alarm '{alarm_name}' for instance {instance_id} with metric '{metric_name}'")
 
-            # === NEW: Check ActionsEnabled flag ===
+            # ➤ Print and evaluate ActionsEnabled
             actions_enabled = alarm.get('ActionsEnabled', True)
+            print(f"    ➤ ActionsEnabled: {actions_enabled}")
 
             if actions_enabled:
                 compliance_type = 'COMPLIANT'
@@ -126,7 +125,6 @@ def lambda_handler(event, context):
 
         print(f"Submitted {len(evaluations)} evaluations to AWS Config.")
 
-    # Print per-instance metric coverage summary
     print("\n=== Alarm Coverage per Instance and Metric ===")
     for instance_id in instance_ids:
         print(f"\nInstance: {instance_id}")
