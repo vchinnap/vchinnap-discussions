@@ -29,7 +29,9 @@ flowchart TD
 
     subgraph CustomPath ["🟦 Custom Rule Flow"]
         D --> G["Lambda Function Evaluates Compliance"]
-        G --> H["Remediation Document (SSM)"]
+        G --> G1["Filter Resources by Tags in Lambda"]
+        G1 --> H["Remediation Document (SSM)"]
         H --> I["Send to Security Hub"]
     end
 ```
+
