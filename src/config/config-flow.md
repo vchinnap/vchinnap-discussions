@@ -121,3 +121,6 @@ This task implements a CDK-based deployment for both **AWS Managed** and **Custo
 ---
 
 Let me know if you also need an **epic link, labels, or acceptance criteria** for JIRA.
+
+
+AWS Config watches for resource changes or uses a schedule → then invokes the Lambda function you defined in your custom rule → Lambda runs compliance logic → returns result back to AWS Config.
