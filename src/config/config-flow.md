@@ -90,4 +90,34 @@ flowchart TD
   end
 ```
 
-📄
+Here’s a crisp and clear **JIRA description** that summarizes the purpose and flow shown in your diagram:
+
+---
+
+### **Description: AWS Config Rule & Remediation Deployment via CDK**
+
+This task implements a CDK-based deployment for both **AWS Managed** and **Custom Config Rules** with associated **SSM Remediation Documents**. The solution enforces compliance evaluation and automates remediation for **tag-scoped resources** (`ConfigRule=True`).
+
+### **Flow Summary**:
+
+* The CDK stack provisions:
+
+  * AWS Config Rules (Managed & Custom)
+  * Remediation SSM Documents
+* **Managed Rules** are evaluated directly by AWS Config using tag scope.
+* **Custom Rules** use a Lambda function to evaluate compliance based on resource tags.
+* Compliance results are categorized as:
+
+  * ✅ **COMPLIANT** – No action needed.
+  * ❌ **NON-COMPLIANT** – Triggers remediation via SSM document.
+* Compliance statuses (for both outcomes) are reported to **AWS Security Hub**.
+
+### **Value Delivered**:
+
+* Enforces consistent compliance across tagged resources.
+* Automates remediation for NON-COMPLIANT findings.
+* Improves visibility by integrating with Security Hub.
+
+---
+
+Let me know if you also need an **epic link, labels, or acceptance criteria** for JIRA.
