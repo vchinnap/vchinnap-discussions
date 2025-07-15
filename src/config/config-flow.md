@@ -41,15 +41,17 @@ flowchart TD
   B --> C["AWS Managed Config Rule"]
   B --> D["Custom Config Rule"]
 
+  C --> CE["AWS Config Evaluates Compliance"]
+  D --> DE["Lambda Function Evaluates Compliance"]
+
   subgraph ManagedPath ["🟩AWS Managed Rule Flow"]
-    C --> E["Remediation Document (SSM)"]
+    CE --> E["Remediation Document (SSM)"]
     E --> F["Compliance Status Visible in Security Hub"]
   end
 
   subgraph CustomPath ["🟦 Custom Rule Flow"]
-    D --> G["Lambda Function Evaluates Compliance"]
-    G --> G1["Filter Resources by Tag (ConfigRule=True) in Lambda"]
-    G1 --> H["Remediation Document (SSM)"]
+    DE --> G["Filter Resources by Tag (ConfigRule=True) in Lambda"]
+    G --> H["Remediation Document (SSM)"]
     H --> I["Compliance Status Visible in Security Hub"]
   end
 ```
