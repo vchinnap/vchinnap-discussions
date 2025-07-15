@@ -15,7 +15,7 @@ flowchart TD
 
 
 
-
+```mermaid
 flowchart TD
     A([Start]) --> B["CDK Stack Deploys ConfigRule"]
 
@@ -32,4 +32,4 @@ flowchart TD
         G --> H["Remediation Document (SSM)"]
         H --> I["Send to Security Hub"]
     end
-
+```
