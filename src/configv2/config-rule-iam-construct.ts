@@ -49,7 +49,7 @@ export class ConfigRuleIamRoleConstruct extends Construct {
       roleName: `${ruleName}-iam-role`,
       roleDescription: `IAM role for AWS Config Rule: ${ruleName}`,
       pathoverride: '/',
-      associatedAppCatID: ['1'],
+      associatedAppCatID: ['*'],
       assumeRolePolicyDocument,
       policies: inlinePolicies,
       tags,
