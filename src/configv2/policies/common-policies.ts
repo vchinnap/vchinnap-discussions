@@ -1,29 +1,3 @@
-import { getCommonPolicyStatements } from './common-policy';
-
-export function getCleanupOrphanLogGroupsPolicies(ruleName: string, accountID: string, region: string): any[] {
-  const scopedDelete = {
-    Sid: 'ScopedDeleteOrphanLogs',
-    Effect: 'Allow',
-    Action: ['logs:DeleteLogGroup', 'logs:ListTagsLogGroup'],
-    Resource: `arn:aws:logs:${region}:${accountID}:log-group:/aws/lambda/*-tags`
-  };
-
-  return [
-    {
-      policyName: `${ruleName}-combined-policy`,
-      policyDocument: {
-        Version: '2012-10-17',
-        Statement: [
-          ...getCommonPolicyStatements(accountID, region),
-          scopedDelete
-        ]
-      }
-    }
-  ];
-}
-
-
-
 
 
 export function getCommonPolicyStatements(accountID: string, region: string): any[] {
