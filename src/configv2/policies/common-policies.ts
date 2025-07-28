@@ -28,17 +28,5 @@ export function getCommonPolicyStatements(accountID: string, region: string): an
       ],
       Resource: '*'
     },
-
-    // ✅ CloudWatch Metrics
-    {
-      Sid: 'CWMetricRead',
-      Effect: 'Allow',
-      Action: [
-        'cloudwatch:GetMetricData',
-        'cloudwatch:ListMetrics',
-        'cloudwatch:DescribeAlarms'
-      ],
-      Resource: '*'
-    }
   ];
 }
