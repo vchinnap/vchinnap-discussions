@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: StackSet - Multiple SSM Automation docs to invoke fixed Lambda functions
+
+Resources:
+  HopsConfigRule1Doc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: hops-configrule-rule-1
+      DocumentType: Automation
+      DocumentFormat: YAML
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '0.3'
+        description: "Invoke Lambda function 'hops-configrule-rule-1' using SSM Automation"
+        assumeRole: "arn:aws:iam::111122223333:role/hops-automation-assume-role"
+        parameters:
+          Payload:
+            type: String
+            description: "(Optional) JSON payload to send to the Lambda function."
+            default: "{}"
+        mainSteps:
+          - name: invokeLambda
+            action: aws:invokeLambdaFunction
+            inputs:
+              FunctionName: "hops-configrule-rule-1"
+              Payload: "{{ Payload }}"
+
+  HopsConfigRule2Doc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: hops-configrule-rule-2
+      DocumentType: Automation
+      DocumentFormat: YAML
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '0.3'
+        description: "Invoke Lambda function 'hops-configrule-rule-2' using SSM Automation"
+        assumeRole: "arn:aws:iam::111122223333:role/hops-automation-assume-role"
+        parameters:
+          Payload:
+            type: String
+            description: "(Optional) JSON payload to send to the Lambda function."
+            default: "{}"
+        mainSteps:
+          - name: invokeLambda
+            action: aws:invokeLambdaFunction
+            inputs:
+              FunctionName: "hops-configrule-rule-2"
+              Payload: "{{ Payload }}"
+
+  HopsConfigRule3Doc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: hops-configrule-rule-3
+      DocumentType: Automation
+      DocumentFormat: YAML
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '0.3'
+        description: "Invoke Lambda function 'hops-configrule-rule-3' using SSM Automation"
+        assumeRole: "arn:aws:iam::111122223333:role/hops-automation-assume-role"
+        parameters:
+          Payload:
+            type: String
+            description: "(Optional) JSON payload to send to the Lambda function."
+            default: "{}"
+        mainSteps:
+          - name: invokeLambda
+            action: aws:invokeLambdaFunction
+            inputs:
+              FunctionName: "hops-configrule-rule-3"
+              Payload: "{{ Payload }}"
+
+Outputs:
+  Doc1Name:
+    Value: !GetAtt HopsConfigRule1Doc.Name
+  Doc2Name:
+    Value: !GetAtt HopsConfigRule2Doc.Name
+  Doc3Name:
+    Value: !GetAtt HopsConfigRule3Doc.Name
