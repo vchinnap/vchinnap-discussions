@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: StackSet - Create SSM Automation document to invoke a Lambda function
+
+Parameters:
+  DocumentName:
+    Type: String
+    Default: Invoke-Lambda-Automation
+    Description: Name of the SSM Automation document to create.
+
+Resources:
+  InvokeLambdaAutomationDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Ref DocumentName
+      DocumentType: Automation
+      DocumentFormat: YAML
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '0.3'
+        description: "Invoke a Lambda function using SSM Automation"
+        assumeRole: "{{ AutomationAssumeRole }}"
+        parameters:
+          AutomationAssumeRole:
+            type: String
+            description: "(Required) The IAM role ARN that allows Automation to perform the actions on your behalf."
+          FunctionName:
+            type: String
+            description: "(Required) The name of the Lambda function to invoke."
+          Payload:
+            type: String
+            description: "(Optional) JSON payload to send to the Lambda function."
+            default: "{}"
+        mainSteps:
+          - name: invokeLambda
+            action: aws:invokeLambdaFunction
+            inputs:
+              FunctionName: "{{ FunctionName }}"
+              Payload: "{{ Payload }}"
+
+Outputs:
+  SsmDocumentName:
+    Description: The created SSM Automation document name
+    Value: !Ref DocumentName
+  SsmDocumentVersion:
+    Description: The current document version
+    Value: !GetAtt InvokeLambdaAutomationDocument.DocumentVersion
