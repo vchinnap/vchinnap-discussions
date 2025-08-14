@@ -13,14 +13,11 @@
         "kms:CreateGrant",
         "kms:RetireGrant"
       ],
-      "Resource": "arn:aws:kms:${Region}:${AccountId}:key/${KeyId}",
+      "Resource": "arn:aws:kms:${Region}:${AccountId}:alias/lambda-logs",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "${Region}",
           "kms:ViaService": "logs.${Region}.amazonaws.com"
-        },
-        "ForAnyValue:StringLike": {
-          "kms:ResourceAliases": "alias/lambda-logs*"
         },
         "StringLike": {
           "kms:EncryptionContext:aws:logs:arn": "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/lambda/*"
