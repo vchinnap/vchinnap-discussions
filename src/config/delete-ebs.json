@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "0.3",
+  "description": "SSM Document to delete an Amazon EBS Volume",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "AutomationAssumeRole": {
+      "type": "String",
+      "description": "(Required) The ARN of the IAM role that allows Automation to perform the actions on your behalf."
+    },
+    "VolumeId": {
+      "type": "String",
+      "description": "(Required) The ID of the EBS volume to delete. Example: vol-0123456789abcdef0"
+    }
+  },
+  "mainSteps": [
+    {
+      "name": "deleteVolume",
+      "action": "aws:executeAwsApi",
+      "description": "Deletes the specified EBS volume",
+      "inputs": {
+        "Service": "ec2",
+        "Api": "DeleteVolume",
+        "VolumeId": "{{ VolumeId }}"
+      }
+    }
+  ]
+}
