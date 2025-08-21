@@ -2,11 +2,6 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Secure t3.micro EC2 in its own VPC (SSM-only by default), tagged Name=hcops
 
 Parameters:
-  InstanceType:
-    Type: String
-    Default: "t3.micro"
-    AllowedValues: ["t3.micro","t3.small","t3.medium"]
-    Description: EC2 instance type (default t3.micro)
   SshCidr:
     Type: String
     Default: ""
@@ -15,10 +10,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional EC2 KeyPair name (required only if enabling SSH)
-  AmiId:
-    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
-    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
-    Description: SSM parameter for latest Amazon Linux 2023 AMI (x86_64)
 
 Conditions:
   EnableSSH: !Not [ !Equals [ !Ref SshCidr, "" ] ]
@@ -119,8 +110,9 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       IamInstanceProfile: !Ref InstanceProfile
-      InstanceType: !Ref InstanceType
-      ImageId: !Ref AmiId
+      InstanceType: t3.micro
+      # Dynamic SSM reference for AL2023 (no Parameters/Default needed)
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}"
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds: [ !Ref InstanceSG ]
       KeyName: !If [ SSHReady, !Ref KeyName, !Ref "AWS::NoValue" ]
@@ -131,7 +123,7 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          # Amazon Linux 2023 includes SSM Agent; ensure it's enabled
+          # Ensure SSM Agent is running (AL2023 includes it)
           systemctl enable amazon-ssm-agent
           systemctl start amazon-ssm-agent
           # Keep SSH disabled unless explicitly enabled via stack params
