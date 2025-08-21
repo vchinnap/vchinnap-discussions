@@ -22,7 +22,7 @@ Resources:
           - Sid: TrustSelfAccountRoot
             Effect: Allow
             Principal:
-              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
             Action: "sts:AssumeRole"
 
           # --- TRUST: SECURITY ACCOUNT (COMMENTED FOR NOW) ---
@@ -30,7 +30,7 @@ Resources:
           # - Sid: TrustSecurityAccountRoot
           #   Effect: Allow
           #   Principal:
-          #     AWS: "arn:aws:iam::<SECURITY_ACCOUNT_ID>:root"
+          #     AWS: "arn:${AWS::Partition}:iam::<SECURITY_ACCOUNT_ID>:root"
           #   Action: "sts:AssumeRole"
 
           # --- TRUST: SPECIFIC ROLE IN SECURITY ACCOUNT (TIGHTER; COMMENTED) ---
@@ -38,7 +38,7 @@ Resources:
           # - Sid: TrustSpecificSecurityRole
           #   Effect: Allow
           #   Principal:
-          #     AWS: "arn:aws:iam::<SECURITY_ACCOUNT_ID>:role/<SecurityRoleName>"
+          #     AWS: "arn:${AWS::Partition}:iam::<SECURITY_ACCOUNT_ID>:role/<SecurityRoleName>"
           #   Action: "sts:AssumeRole"
 
       # Keep lab-safe; swap to AdministratorAccess only if you really need it in sandboxes.
@@ -66,7 +66,7 @@ Resources:
   #         - Sid: ReadAutomationExecutions
   #           Effect: Allow
   #           Action: "ssm:GetAutomationExecution"
-  #           Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:automation-execution/*"
+  #           Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:automation-execution/*"
 
 Outputs:
   RoleArn:
