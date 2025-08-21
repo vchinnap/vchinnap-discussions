@@ -86,5 +86,3 @@ Outputs:
 * Inline policy block is scaffolded for SSM testing, commented out for now.
 
 ---
-
-👉 Do you want me to also give you the **CLI command to assume this role** right after deployment (with example output), so you can validate the trust quickly in your Lab account?
