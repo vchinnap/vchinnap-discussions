@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Streaming Chat Test</title>
+</head>
+<body>
+  <h2>Ask Chat</h2>
+  <input id="q" type="text" size="50" placeholder="Type a question..."/>
+  <button onclick="send()">Ask</button>
+  <pre id="out"></pre>
+
+<script>
+const URL = "PASTE_FUNCTION_URL_HERE"; // Replace with your FunctionUrl from CloudFormation Outputs
+
+function send() {
+  const question = document.getElementById("q").value;
+  document.getElementById("out").textContent = ""; // clear old output
+
+  const evtSource = new EventSource(`${URL}?question=${encodeURIComponent(question)}`, { withCredentials: false });
+
+  evtSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.token) {
+        document.getElementById("out").textContent += data.token;
+      }
+    } catch {}
+  };
+
+  evtSource.addEventListener("done", () => {
+    evtSource.close();
+  });
+}
+</script>
+</body>
+</html>
