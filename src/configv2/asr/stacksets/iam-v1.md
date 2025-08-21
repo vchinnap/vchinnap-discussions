@@ -1,7 +1,3 @@
-Perfect ✅ — I’ll give you that **full template**, but with the **option to easily flip between SELF vs. Security account trust**.
-
-Here’s the **copy-ready StackSet template** with comments inline (enterprise style):
-
 ```yaml
 AWSTemplateFormatVersion: '2010-09-09'
 Description: StackSet - IAM Role (trusts SELF for testing). Comments show how to trust a Security account later.
