@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Streaming Chat (Claude 3.5 via Amazon Bedrock) exposed through a Lambda Function URL using SSE.
+  Enterprise defaults: least-privilege IAM, log retention, optional API key check.
+
+Parameters:
+  BedrockRegion:
+    Type: String
+    Default: !Ref AWS::Region
+    Description: Region to call Bedrock (must have model access enabled there).
+  TextModelId:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20240620
+    Description: Bedrock text model id (e.g., anthropic.claude-3-5-sonnet-20240620)
+  AppApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional API key value; if set, requests must send X-API-Key header matching this.
+
+Resources:
+  ChatRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub HOPS-StreamingChatRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole # logs
+      Policies:
+        - PolicyName: BedrockInvokeStream
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeClaudeStream
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:${BedrockRegion}::foundation-model/${TextModelId}
+
+  ChatLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ChatFunction}
+      RetentionInDays: 14
+
+  ChatFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub HOPS-StreamingChat-${AWS::StackName}
+      Role: !GetAtt ChatRole.Arn
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 120
+      MemorySize: 1024
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          BEDROCK_REGION: !Ref BedrockRegion
+          TEXT_MODEL_ID: !Ref TextModelId
+          APP_API_KEY: !Ref AppApiKey
+      Code:
+        ZipFile: |
+          'use strict';
+          const AWS = require('aws-sdk');
+          const bedrock = new AWS.BedrockRuntime({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION });
+          const MODEL_ID = process.env.TEXT_MODEL_ID || 'anthropic.claude-3-5-sonnet-20240620';
+          const API_KEY = process.env.APP_API_KEY || '';
+
+          // Lambda Response Streaming (Node 18+/20+)
+          exports.handler = awslambda.streamifyResponse(async (event, responseStream, context) => {
+            // CORS + SSE headers
+            const headers = {
+              "content-type": "text/event-stream; charset=utf-8",
+              "cache-control": "no-cache, no-store, must-revalidate",
+              "pragma": "no-cache",
+              "access-control-allow-origin": "*",
+              "access-control-allow-headers": "content-type,x-api-key,X-API-Key",
+              "access-control-allow-methods": "POST,OPTIONS"
+            };
+            awslambda.HttpResponseStream.from(responseStream, { statusCode: 200, headers });
+
+            try {
+              // Preflight
+              if (event.requestContext?.http?.method === 'OPTIONS') {
+                responseStream.end();
+                return;
+              }
+
+              // Optional API key gate
+              if (API_KEY) {
+                const hk = event.headers || {};
+                const sent = hk['x-api-key'] || hk['X-API-Key'] || hk['X-api-key'];
+                if (!sent || sent !== API_KEY) {
+                  responseStream.write(`data: ${JSON.stringify({ error: "unauthorized" })}\n\n`);
+                  responseStream.end();
+                  return;
+                }
+              }
+
+              const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
+              const question = (body.question || '').trim();
+              if (!question) {
+                responseStream.write(`data: ${JSON.stringify({ error: "missing question" })}\n\n`);
+                responseStream.end();
+                return;
+              }
+
+              const prompt = `You are a concise professional assistant. Answer clearly and helpfully.\n\nUser: ${question}\nAssistant:`;
+
+              const payload = {
+                anthropic_version: "bedrock-2023-05-31",
+                max_tokens: 600,
+                temperature: 0.2,
+                messages: [{ role: "user", content: [{ type: "text", text: prompt }]}]
+              };
+
+              // Start streaming invocation
+              const req = bedrock.invokeModelWithResponseStream({
+                modelId: MODEL_ID,
+                accept: "application/json",
+                contentType: "application/json",
+                body: JSON.stringify(payload)
+              });
+
+              // Bedrock v2 SDK streaming: pipe chunks as SSE
+              const stream = req.createReadStream();
+
+              stream.on('data', (buf) => {
+                try {
+                  // Bedrock event stream yields JSON lines (one event per chunk)
+                  const line = buf.toString('utf-8').trim();
+                  if (!line) return;
+                  // Some chunks may contain multiple JSON objects; split safely
+                  const parts = line.split(/\n/).filter(Boolean);
+                  for (const p of parts) {
+                    const evt = JSON.parse(p);
+                    const delta = (evt?.delta && evt.delta.text) || evt?.output_text || "";
+                    if (delta) {
+                      responseStream.write(`data: ${JSON.stringify({ token: delta })}\n\n`);
+                    }
+                  }
+                } catch (e) {
+                  console.error("Chunk parse error", e);
+                }
+              });
+
+              stream.on('end', () => {
+                responseStream.write(`event: done\ndata: {}\n\n`);
+                responseStream.end();
+              });
+
+              stream.on('error', (err) => {
+                console.error("Bedrock stream error", err);
+                responseStream.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+                responseStream.end();
+              });
+
+            } catch (err) {
+              console.error(err);
+              responseStream.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+              responseStream.end();
+            }
+          });
+
+  ChatFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref ChatFunction
+      AuthType: NONE
+      Cors:
+        AllowOrigins: ['*']
+        AllowMethods: ['POST','OPTIONS']
+        AllowHeaders: ['content-type','x-api-key','X-API-Key']
+
+  ChatFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChatFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  FunctionUrl:
+    Description: POST to this URL with JSON body {"question":"..."}; stream is SSE (text/event-stream). Include X-API-Key if set.
+    Value: !Ref ChatFunctionUrl
+  LambdaName:
+    Description: Lambda function name
+    Value: !Ref ChatFunction
