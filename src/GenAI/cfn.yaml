@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Lab-friendly GenAI demo using Lambda + API Gateway + Amazon Bedrock (non-streaming JSON response).
+
+Parameters:
+  BedrockRegion:
+    Type: String
+    Default: "us-east-1"
+    Description: Region to call Bedrock (enable model access there first)
+  TextModelId:
+    Type: String
+    Default: "anthropic.claude-3-5-sonnet-20240620"
+    Description: Bedrock text model id (e.g., anthropic.claude-3-5-sonnet-20240620)
+  AppApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional API key value; if set, clients must include header X-API-Key with this value.
+
+Resources:
+  GenAIRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: InvokeBedrock
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeModel
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:${BedrockRegion}::foundation-model/${TextModelId}
+
+  GenAILambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role: !GetAtt GenAIRole.Arn
+      Runtime: nodejs20.x
+      Handler: index.handler
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          BEDROCK_REGION: !Ref BedrockRegion
+          TEXT_MODEL_ID: !Ref TextModelId
+          APP_API_KEY: !Ref AppApiKey
+      Code:
+        ZipFile: |
+          'use strict';
+          const AWS = require('aws-sdk');
+          const bedrock = new AWS.BedrockRuntime({ region: process.env.BEDROCK_REGION || process.env.AWS_REGION });
+          const MODEL_ID = process.env.TEXT_MODEL_ID || 'anthropic.claude-3-5-sonnet-20240620';
+          const API_KEY = process.env.APP_API_KEY || '';
+
+          exports.handler = async (event) => {
+            const cors = {
+              "access-control-allow-origin": "*",
+              "access-control-allow-headers": "content-type,x-api-key,X-API-Key",
+              "access-control-allow-methods": "POST,OPTIONS",
+              "content-type": "application/json"
+            };
+
+            try {
+              if (event.requestContext?.http?.method === 'OPTIONS') {
+                return { statusCode: 200, headers: cors, body: "" };
+              }
+
+              if (API_KEY) {
+                const hk = event.headers || {};
+                const sent = hk['x-api-key'] || hk['X-API-Key'] || hk['X-api-key'];
+                if (!sent || sent !== API_KEY) {
+                  return { statusCode: 401, headers: cors, body: JSON.stringify({ error: "unauthorized" }) };
+                }
+              }
+
+              const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
+              const question = (body.question || '').trim();
+              if (!question) {
+                return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "missing question" }) };
+              }
+
+              const prompt = `You are a concise professional assistant. Answer clearly and helpfully.
+              
+              User: ${question}
+              Assistant:`;
+
+              const payload = {
+                anthropic_version: "bedrock-2023-05-31",
+                max_tokens: 500,
+                temperature: 0.2,
+                messages: [
+                  { role: "user", content: [{ type: "text", text: prompt }] }
+                ]
+              };
+
+              const resp = await bedrock.invokeModel({
+                modelId: MODEL_ID,
+                accept: "application/json",
+                contentType: "application/json",
+                body: JSON.stringify(payload)
+              }).promise();
+
+              const out = JSON.parse(Buffer.from(resp.body || resp.Body).toString("utf-8"));
+              const answer = out?.content?.[0]?.text || out?.output_text || "(no response)";
+
+              return { statusCode: 200, headers: cors, body: JSON.stringify({ answer }) };
+            } catch (err) {
+              console.error(err);
+              return { statusCode: 500, headers: { "content-type": "application/json", "access-control-allow-origin": "*" }, body: JSON.stringify({ error: err.message }) };
+            }
+          };
+
+  GenAIHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: GenAI-Lab-HTTP-API
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['POST','OPTIONS']
+        AllowHeaders: ['content-type','x-api-key','X-API-Key']
+
+  GenAIIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref GenAIHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GenAILambda.Arn}/invocations
+      PayloadFormatVersion: '2.0'
+
+  GenAIRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref GenAIHttpApi
+      RouteKey: POST /chat
+      Target: !Sub integrations/${GenAIIntegration}
+
+  GenAIStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref GenAIHttpApi
+      StageName: prod
+      AutoDeploy: true
+
+  GenAILambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GenAILambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${GenAIHttpApi}/*/*/chat
+
+Outputs:
+  ApiEndpoint:
+    Description: POST here with {"question":"..."}; include X-API-Key if you set AppApiKey
+    Value: !Sub https://${GenAIHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/chat
+  LambdaName:
+    Description: Lambda function name
+    Value: !Ref GenAILambda
