@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Secure t3.micro EC2 in its own VPC (SSM-only by default), tagged Name=hcops
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+    Description: EC2 instance type (default t3.micro)
+  SshCidr:
+    Type: String
+    Default: ""
+    Description: Optional CIDR to allow SSH (e.g., 1.2.3.4/32). Leave blank to keep SSH closed.
+  KeyName:
+    Type: String
+    Default: ""
+    Description: Optional EC2 KeyPair name (required only if enabling SSH)
+
+Conditions:
+  EnableSSH: !Not [ !Equals [ !Ref SshCidr, "" ] ]
+  HasKey:    !Not [ !Equals [ !Ref KeyName, "" ] ]
+  SSHReady:  !And [ !Condition EnableSSH, !Condition HasKey ]
+
+Mappings:
+  AmiParamMap:
+    AL2023x86:
+      Param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.90.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: hcops-vpc }]
+
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: hcops-igw }]
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref VPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.90.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: hcops-public-a }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{ Key: Name, Value: hcops-public-rt }]
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+  PublicSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  InstanceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: hcops-ec2-sg (no inbound by default; SSH optional)
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags: [{ Key: Name, Value: hcops-ec2-sg }]
+
+  SGSSHInbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: SSHReady
+    Properties:
+      GroupId: !Ref InstanceSG
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SshCidr
+      Description: Optional SSH access
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub hcops-ec2-ssm-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: hcops-ec2-role
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [ !Ref InstanceRole ]
+
+  AmiParam:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: !FindInMap [ AmiParamMap, AL2023x86, Param ]
+
+  EC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      IamInstanceProfile: !Ref InstanceProfile
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiParam
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds: [ !Ref InstanceSG ]
+      KeyName: !If [ SSHReady, !Ref KeyName, !Ref "AWS::NoValue" ]
+      Tags:
+        - { Key: Name, Value: hcops }
+        - { Key: Owner, Value: hcops }
+        - { Key: Purpose, Value: Lab-SSM }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Amazon Linux 2023 already includes SSM Agent; ensure it's enabled
+          systemctl enable amazon-ssm-agent
+          systemctl start amazon-ssm-agent
+          # Basic hardening knobs (no password auth, keep SSH service stopped unless you open it)
+          systemctl stop sshd || true
+          systemctl disable sshd || true
+
+Outputs:
+  InstanceId:
+    Description: EC2 InstanceId
+    Value: !Ref EC2
+  InstancePublicIP:
+    Description: Public IPv4 (no inbound open by default)
+    Value: !GetAtt EC2.PublicIp
+  SSMConsoleLink:
+    Description: Open Session Manager to connect (no SSH needed)
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${EC2}?region=${AWS::Region}
