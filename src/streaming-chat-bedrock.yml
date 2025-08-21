@@ -6,22 +6,30 @@ Description: >
 Parameters:
   BedrockRegion:
     Type: String
-    Default: AUTO
+    Default: "AUTO"
     AllowedPattern: '^[A-Za-z0-9-]+$'
-    Description: >
-      Region to call Bedrock. Use a concrete region like us-east-1, or leave as AUTO to use the stack's region.
+    Description: 'Region to call Bedrock. Use a concrete region like "us-east-1", or leave "AUTO" to use the stack region.'
   TextModelId:
     Type: String
-    Default: anthropic.claude-3-5-sonnet-20240620
-    Description: Bedrock text model id (e.g., anthropic.claude-3-5-sonnet-20240620)
+    Default: "anthropic.claude-3-5-sonnet-20240620"
+    Description: 'Bedrock text model id (e.g., "anthropic.claude-3-5-sonnet-20240620").'
   AppApiKey:
     Type: String
     Default: ""
     NoEcho: true
-    Description: Optional API key value; if set, requests must send X-API-Key header matching this.
+    Description: 'Optional API key; if set, requests must send header X-API-Key with this value.'
 
 Conditions:
-  UseAutoRegion: !Equals [ !Ref BedrockRegion, 'AUTO' ]
+  UseAutoRegion: !Equals [ !Ref BedrockRegion, "AUTO" ]
+
+Mappings:
+  PartitionMap:
+    aws:
+      Partition: "aws"
+    aws-us-gov:
+      Partition: "aws-us-gov"
+    aws-cn:
+      Partition: "aws-cn"
 
 Resources:
   ChatRole:
@@ -48,14 +56,11 @@ Resources:
                   - bedrock:InvokeModel
                 Resource:
                   - !Sub
-                    - arn:${AWS::Partition}:bedrock:${UseRegion}::foundation-model/${TextModelId}
-                    - { UseRegion: !If [ UseAutoRegion, !Ref AWS::Region, !Ref BedrockRegion ] }
-
-  ChatLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/${ChatFunction}
-      RetentionInDays: 14
+                    - arn:${Partition}:bedrock:${UseRegion}::foundation-model/${TextModelId}
+                    - {
+                        Partition: !FindInMap [ PartitionMap, !Ref AWS::Partition, Partition ],
+                        UseRegion: !If [ UseAutoRegion, !Ref AWS::Region, !Ref BedrockRegion ]
+                      }
 
   ChatFunction:
     Type: AWS::Lambda::Function
@@ -80,6 +85,7 @@ Resources:
           const MODEL_ID = process.env.TEXT_MODEL_ID || 'anthropic.claude-3-5-sonnet-20240620';
           const API_KEY = process.env.APP_API_KEY || '';
 
+          // Lambda Response Streaming (Node 18+/20+)
           exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
             const headers = {
               "content-type": "text/event-stream; charset=utf-8",
@@ -92,10 +98,12 @@ Resources:
             awslambda.HttpResponseStream.from(responseStream, { statusCode: 200, headers });
 
             try {
+              // CORS preflight
               if (event.requestContext?.http?.method === 'OPTIONS') {
                 responseStream.end(); return;
               }
 
+              // Optional API key gate
               if (API_KEY) {
                 const hk = event.headers || {};
                 const sent = hk['x-api-key'] || hk['X-API-Key'] || hk['X-api-key'];
@@ -161,6 +169,13 @@ Resources:
             }
           });
 
+  # Dedicated log group so we can retain logs for 14 days; name must match the function name convention
+  ChatLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/HOPS-StreamingChat-${AWS::StackName}
+      RetentionInDays: 14
+
   ChatFunctionUrl:
     Type: AWS::Lambda::Url
     Properties:
@@ -181,7 +196,7 @@ Resources:
 
 Outputs:
   FunctionUrl:
-    Description: POST to this URL with JSON body {"question":"..."}; stream is SSE (text/event-stream). Include X-API-Key if set.
+    Description: 'POST with {"question":"..."}; streaming via SSE. Include X-API-Key if you set AppApiKey.'
     Value: !Ref ChatFunctionUrl
   LambdaName:
     Description: Lambda function name
