@@ -4,11 +4,8 @@ Description: Secure t3.micro EC2 in its own VPC (SSM-only by default), tagged Na
 Parameters:
   InstanceType:
     Type: String
-    Default: t3.micro
-    AllowedValues:
-      - t3.micro
-      - t3.small
-      - t3.medium
+    Default: "t3.micro"
+    AllowedValues: ["t3.micro","t3.small","t3.medium"]
     Description: EC2 instance type (default t3.micro)
   SshCidr:
     Type: String
@@ -18,16 +15,15 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional EC2 KeyPair name (required only if enabling SSH)
+  AmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
+    Description: SSM parameter for latest Amazon Linux 2023 AMI (x86_64)
 
 Conditions:
   EnableSSH: !Not [ !Equals [ !Ref SshCidr, "" ] ]
   HasKey:    !Not [ !Equals [ !Ref KeyName, "" ] ]
   SSHReady:  !And [ !Condition EnableSSH, !Condition HasKey ]
-
-Mappings:
-  AmiParamMap:
-    AL2023x86:
-      Param: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
 
 Resources:
   VPC:
@@ -119,16 +115,12 @@ Resources:
     Properties:
       Roles: [ !Ref InstanceRole ]
 
-  AmiParam:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: !FindInMap [ AmiParamMap, AL2023x86, Param ]
-
   EC2:
     Type: AWS::EC2::Instance
     Properties:
       IamInstanceProfile: !Ref InstanceProfile
       InstanceType: !Ref InstanceType
-      ImageId: !Ref AmiParam
+      ImageId: !Ref AmiId
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds: [ !Ref InstanceSG ]
       KeyName: !If [ SSHReady, !Ref KeyName, !Ref "AWS::NoValue" ]
@@ -139,10 +131,10 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          # Amazon Linux 2023 already includes SSM Agent; ensure it's enabled
+          # Amazon Linux 2023 includes SSM Agent; ensure it's enabled
           systemctl enable amazon-ssm-agent
           systemctl start amazon-ssm-agent
-          # Basic hardening knobs (no password auth, keep SSH service stopped unless you open it)
+          # Keep SSH disabled unless explicitly enabled via stack params
           systemctl stop sshd || true
           systemctl disable sshd || true
 
