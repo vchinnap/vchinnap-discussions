@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Streaming chatbot (MOCK mode) over Lambda Function URL using SSE — no Bedrock access required.
+
+Parameters:
+  AppApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional API key; if set, clients must include header X-API-Key with this value.
+
+Resources:
+  ChatRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ChatFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role: !GetAtt ChatRole.Arn
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 120
+      MemorySize: 512
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          APP_API_KEY: !Ref AppApiKey
+      Code:
+        ZipFile: |
+          'use strict';
+
+          // Small helper for sleeps between tokens
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+          // Streaming response (SSE) using Lambda Response Streaming
+          exports.handler = awslambda.streamifyResponse(async (event, responseStream) => {
+            const headers = {
+              "content-type": "text/event-stream; charset=utf-8",
+              "cache-control": "no-cache, no-store, must-revalidate",
+              "pragma": "no-cache",
+              "access-control-allow-origin": "*",
+              "access-control-allow-headers": "content-type,x-api-key,X-API-Key",
+              "access-control-allow-methods": "POST"  // Function URL handles preflight automatically
+            };
+            awslambda.HttpResponseStream.from(responseStream, { statusCode: 200, headers });
+
+            try {
+              const API_KEY = process.env.APP_API_KEY || "";
+              if (API_KEY) {
+                const hk = event.headers || {};
+                const sent = hk['x-api-key'] || hk['X-API-Key'] || hk['X-api-key'];
+                if (!sent || sent !== API_KEY) {
+                  responseStream.write(`data: ${JSON.stringify({ error: "unauthorized" })}\n\n`);
+                  responseStream.end(); return;
+                }
+              }
+
+              // Accept POST body {"question": "..."} or GET ?question=...
+              let question = "";
+              if (event.requestContext?.http?.method === 'POST') {
+                const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
+                question = (body.question || '').trim();
+              } else {
+                const qs = event.rawQueryString || '';
+                const m = qs.match(/(?:^|&)question=([^&]*)/);
+                question = m ? decodeURIComponent(m[1]) : '';
+              }
+              if (!question) {
+                responseStream.write(`data: ${JSON.stringify({ error: "missing question" })}\n\n`);
+                responseStream.end(); return;
+              }
+
+              // --- MOCK response tokens (no Bedrock call) ---
+              const answer =
+                `MOCK STREAM (no Bedrock): You asked: "${question}". ` +
+                `This is a simulated streaming reply suitable for restricted lab accounts. ` +
+                `When model access is granted, swap this Lambda code to call Bedrock and stream real tokens.`;
+
+              // Stream token-by-token (split by spaces for a "typing" feel)
+              const tokens = answer.split(' ');
+              for (const t of tokens) {
+                responseStream.write(`data: ${JSON.stringify({ token: t + ' ' })}\n\n`);
+                await sleep(40); // small delay per token
+              }
+              responseStream.write(`event: done\ndata: {}\n\n`);
+              responseStream.end();
+
+            } catch (err) {
+              console.error(err);
+              responseStream.write(`data: ${JSON.stringify({ error: err.message || 'unknown error' })}\n\n`);
+              responseStream.end();
+            }
+          });
+
+  ChatFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref ChatFunction
+      AuthType: NONE
+      Cors:
+        AllowOrigins: ['*']
+        AllowMethods: ['POST']   # IMPORTANT: Function URL CORS does not accept OPTIONS
+        AllowHeaders: ['content-type','x-api-key','X-API-Key']
+
+  ChatFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChatFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  FunctionUrl:
+    Description: Use with the HTML tester below. Supports POST JSON {"question":"..."} and GET ?question= for quick tests.
+    Value: !Ref ChatFunctionUrl
+  LambdaName:
+    Description: Lambda function name
+    Value: !Ref ChatFunction
