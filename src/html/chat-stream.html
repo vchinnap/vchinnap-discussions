@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Streaming Chat (MOCK)</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 2rem; }
+    input { width: 520px; padding: 8px; }
+    button { padding: 8px 12px; margin-left: 8px; }
+    pre { white-space: pre-wrap; background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; margin-top: 1rem; min-height: 120px; }
+  </style>
+</head>
+<body>
+  <h2>💬 Streaming Chat (MOCK for Lab)</h2>
+  <div>
+    <input id="q" placeholder="Type a question" />
+    <button onclick="ask()">Ask</button>
+  </div>
+  <pre id="out"></pre>
+
+<script>
+  const URL = "PASTE_FUNCTION_URL_HERE"; // e.g., https://abc123.lambda-url.us-east-1.on.aws/
+  const API_KEY = ""; // set if you configured AppApiKey in the stack
+
+  async function ask() {
+    const q = document.getElementById('q').value.trim();
+    const out = document.getElementById('out');
+    out.textContent = ""; // clear
+
+    const res = await fetch(URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(API_KEY ? { "X-API-Key": API_KEY } : {})
+      },
+      body: JSON.stringify({ question: q })
+    });
+
+    if (!res.ok || !res.body) {
+      out.textContent = `HTTP ${res.status}`;
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // SSE frames end with a blank line
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx);   // one SSE event
+        buf = buf.slice(idx + 2);
+
+        const line = frame.split("\n").find(l => l.startsWith("data: "));
+        if (!line) continue;
+
+        try {
+          const obj = JSON.parse(line.slice(6));
+          if (obj.token) out.textContent += obj.token;
+          if (obj.error) out.textContent += `\n[Error] ${obj.error}\n`;
+        } catch {}
+      }
+    }
+  }
+</script>
+</body>
+</html>
