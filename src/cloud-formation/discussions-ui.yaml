@@ -1,0 +1,291 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Secure static UI for "GitHub Discussions Chat" (S3 + CloudFront OAC). 
+  Seeds index.html via a custom Lambda. Works with streaming (SSE) or non-streaming JSON backends.
+
+Parameters:
+  ApiEndpoint:
+    Type: String
+    Description: Your chat API endpoint (e.g., Function URL or API Gateway /chat)
+  ResponseMode:
+    Type: String
+    Default: "json"
+    AllowedValues: ["json","stream"]
+    Description: "json = full JSON response; stream = SSE token stream"
+  AppApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional API key to send as X-API-Key header (leave blank if not required)
+  WebsiteTitle:
+    Type: String
+    Default: "GitHub Discussions Chat"
+    Description: Page title and header
+  IndexKey:
+    Type: String
+    Default: "index.html"
+    Description: Object key for the main HTML file
+
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      Tags:
+        - { Key: Name, Value: github-discussions-ui }
+
+  OAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "oac-${AWS::StackName}"
+        Description: OAC for S3 origin
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: !Ref IndexKey
+        PriceClass: PriceClass_100
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Origins:
+          - Id: s3-origin
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            S3OriginConfig: {}
+            OriginAccessControlId: !Ref OAC
+        DefaultCacheBehavior:
+          TargetOriginId: s3-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # Managed-CachingOptimized
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf # Managed-CORS-S3Origin
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SimpleCORS
+        DefaultCacheBehavior:
+          TargetOriginId: s3-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+      Tags:
+        - { Key: Name, Value: github-discussions-ui }
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontReadViaOAC
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: ['s3:GetObject']
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution.Id}"
+
+  SeederRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: WriteToSiteBucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:PutObject','s3:DeleteObject','s3:PutObjectAcl']
+                Resource: !Sub "${SiteBucket.Arn}/*"
+
+  Seeder:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role: !GetAtt SeederRole.Arn
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref SiteBucket
+      Code:
+        ZipFile: |
+          'use strict';
+          const https = require('https');
+          const AWS = require('aws-sdk');
+          const s3 = new AWS.S3({signatureVersion:'v4'});
+
+          const send = (event, context, status, data) => {
+            const body = JSON.stringify({
+              Status: status,
+              Reason: 'See CloudWatch Logs for details',
+              PhysicalResourceId: data.PhysicalResourceId || context.logStreamName,
+              StackId: event.StackId,
+              RequestId: event.RequestId,
+              LogicalResourceId: event.LogicalResourceId,
+              Data: data
+            });
+            const url = new URL(event.ResponseURL);
+            const opts = { hostname: url.hostname, path: url.pathname + url.search, method: 'PUT' };
+            const req = https.request(opts, res => res.on('data', ()=>{}));
+            req.on('error', ()=>{});
+            req.write(body); req.end();
+          };
+
+          exports.handler = async (event, context) => {
+            const props = event.ResourceProperties || {};
+            const bucket = process.env.BUCKET_NAME;
+            const key = props.IndexKey || 'index.html';
+            try {
+              if (event.RequestType === 'Delete') {
+                await s3.deleteObject({ Bucket: bucket, Key: key }).promise().catch(()=>{});
+                return send(event, context, 'SUCCESS', { PhysicalResourceId: key });
+              }
+
+              const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${props.WebsiteTitle}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, Arial; margin: 2rem; }
+    h2 { margin-top: 0 }
+    .row { display:flex; gap:8px; }
+    input { flex:1; padding:10px; border:1px solid #ccc; border-radius:8px; }
+    button { padding:10px 14px; border:0; border-radius:8px; background:#2563eb; color:#fff; cursor:pointer; }
+    pre { white-space:pre-wrap; background:#0b1020; color:#d1e7ff; padding:12px; border-radius:8px; margin-top:1rem; min-height:140px; }
+    .hint { color:#444; font-size:12px; margin-top:.5rem; }
+    .src { font-size:12px; color:#9ad; }
+  </style>
+</head>
+<body>
+  <h2>💬 ${props.WebsiteTitle}</h2>
+  <div class="row">
+    <input id="q" placeholder="Ask about your GitHub Discussions…"/>
+    <button onclick="ask()">Ask</button>
+  </div>
+  <div class="hint">Mode: <b>${props.ResponseMode}</b> → Endpoint: <span class="src">${props.ApiEndpoint}</span></div>
+  <pre id="out"></pre>
+
+<script>
+  const URL = ${JSON.stringify(props.ApiEndpoint)};
+  const API_KEY = ${JSON.stringify(props.AppApiKey || "")};
+  const MODE = ${JSON.stringify(props.ResponseMode || "json")};
+
+  async function ask(){
+    const out = document.getElementById('out');
+    const q = document.getElementById('q').value.trim();
+    out.textContent = "";
+    if (!q) { out.textContent = "Type a question first."; return; }
+
+    if (MODE === "stream") {
+      // Streaming (SSE-style via fetch reader)
+      try {
+        const res = await fetch(URL, {
+          method: "POST",
+          headers: { "content-type":"application/json", ...(API_KEY?{"X-API-Key":API_KEY}:{}) },
+          body: JSON.stringify({ question: q })
+        });
+        if (!res.ok || !res.body) {
+          out.textContent = "HTTP " + res.status;
+          return;
+        }
+        const reader = res.body.getReader();
+        const dec = new TextDecoder("utf-8");
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf("\\n\\n")) >= 0) {
+            const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+            const line = frame.split("\\n").find(l => l.startsWith("data: "));
+            if (line) {
+              try {
+                const obj = JSON.parse(line.slice(6));
+                if (obj.token) out.textContent += obj.token;
+                if (obj.error) out.textContent += "\\n[Error] " + obj.error + "\\n";
+              } catch {}
+            }
+          }
+        }
+      } catch (e) {
+        out.textContent = "Error: " + e.message;
+      }
+    } else {
+      // Non-streaming JSON
+      try {
+        const res = await fetch(URL, {
+          method: "POST",
+          headers: { "content-type":"application/json", ...(API_KEY?{"X-API-Key":API_KEY}:{}) },
+          body: JSON.stringify({ question: q })
+        });
+        const js = await res.json();
+        out.textContent = js.answer || js.error || "(no response)";
+      } catch (e) {
+        out.textContent = "Error: " + e.message;
+      }
+    }
+  }
+</script>
+</body>
+</html>`;
+
+              await s3.putObject({
+                Bucket: bucket,
+                Key: key,
+                Body: Buffer.from(html),
+                ContentType: 'text/html; charset=utf-8',
+                CacheControl: 'no-store'
+              }).promise();
+
+              return send(event, context, 'SUCCESS', { PhysicalResourceId: key });
+            } catch (err) {
+              console.error(err);
+              return send(event, context, 'FAILED', { Error: err.message || 'unknown', PhysicalResourceId: key });
+            }
+          };
+
+  SeedWebsite:
+    Type: Custom::SeedWebsite
+    Properties:
+      ServiceToken: !GetAtt Seeder.Arn
+      IndexKey: !Ref IndexKey
+      WebsiteTitle: !Ref WebsiteTitle
+      ApiEndpoint: !Ref ApiEndpoint
+      ResponseMode: !Ref ResponseMode
+      AppApiKey: !Ref AppApiKey
+
+Outputs:
+  CloudFrontURL:
+    Description: Your UI URL
+    Value: !Sub "https://${Distribution.DomainName}"
+  S3BucketName:
+    Description: Private S3 bucket that stores the UI
+    Value: !Ref SiteBucket
