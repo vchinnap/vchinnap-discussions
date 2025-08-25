@@ -2,23 +2,18 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Managed AWS Config rule (REQUIRED_TAGS) for EC2 Instances & Volumes with SSM remediation and dedicated IAM role.
 
 Parameters:
-  # Required tags to enforce (you can change these defaults)
   Tag1Key:
     Type: String
     Default: AppCatId
   Tag1Value:
     Type: String
     Default: UNKNOWN
-    Description: "Optional: comma-separated allowed values (first used as default). Leave UNKNOWN to just ensure key exists."
   Tag2Key:
     Type: String
     Default: SupportTeam
   Tag2Value:
     Type: String
     Default: UNKNOWN
-    Description: "Optional: comma-separated allowed values (first used as default)."
-
-  # Resource types (subset of what REQUIRED_TAGS supports)
   ResourceType1:
     Type: String
     Default: AWS::EC2::Instance
@@ -27,15 +22,12 @@ Parameters:
     Default: AWS::EC2::Volume
 
 Resources:
-  ############################################
-  # (A) Managed Config Rule: REQUIRED_TAGS
-  ############################################
   RequiredTagsRule:
     Type: AWS::Config::ConfigRule
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      ConfigRuleName: OMBASR-Managed-RequiredTags
+      ConfigRuleName: !Sub "${AWS::StackName}-Managed-RequiredTags"
       Description: "Checks required tags via AWS managed rule REQUIRED_TAGS"
       Scope:
         ComplianceResourceTypes:
@@ -50,26 +42,21 @@ Resources:
         tag2Key: !Ref Tag2Key
         tag2Value: !Ref Tag2Value
 
-  ############################################
-  # (B) Remediation Role for SSM Automation
-  ############################################
   RemediationRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: OMBASR-RemediateRole-Managed-RequiredTags
+      RoleName: !Sub "${AWS::StackName}-RemediateRole-Managed-RequiredTags"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: ssm.amazonaws.com
+            Principal: { Service: ssm.amazonaws.com }
             Action: sts:AssumeRole
       Policies:
         - PolicyName: OMBASR-Remediate-EC2-Tagging
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Tagging permissions for EC2 instances and volumes
               - Effect: Allow
                 Action:
                   - ec2:CreateTags
@@ -78,7 +65,6 @@ Resources:
                   - ec2:DescribeInstances
                   - ec2:DescribeVolumes
                 Resource: "*"
-              # Logging for automation script
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -86,13 +72,10 @@ Resources:
                   - logs:PutLogEvents
                 Resource: "*"
 
-  ############################################
-  # (C) SSM Automation Document (remediation)
-  ############################################
   SetRequiredTagsDoc:
     Type: AWS::SSM::Document
     Properties:
-      Name: OMBASR-Remediation-Managed-RequiredTags
+      Name: !Sub "${AWS::StackName}-Remediation-Managed-RequiredTags"
       DocumentType: Automation
       Content:
         schemaVersion: '0.3'
@@ -141,7 +124,6 @@ Resources:
                 def _kv(key, val):
                   if not key:
                     return None
-                  # If value contains comma-separated list, pick first as default
                   v = (val or "").split(",")[0].strip() if val else "UNKNOWN"
                   return {"Key": key, "Value": v}
 
@@ -150,19 +132,12 @@ Resources:
                   rtype = event["resource_type"]
                   tag1k, tag1v = event.get("tag1_key"), event.get("tag1_val")
                   tag2k, tag2v = event.get("tag2_key"), event.get("tag2_val")
-
                   to_apply = [t for t in [_kv(tag1k, tag1v), _kv(tag2k, tag2v)] if t]
-
                   if not to_apply:
                     return {"changed": False, "reason": "No tag keys provided"}
-
-                  # EC2 uses same CreateTags API for both Instance and Volume
                   ec2.create_tags(Resources=[rid], Tags=to_apply)
                   return {"changed": True, "resource": rid, "type": rtype, "tags_applied": to_apply}
 
-  ############################################
-  # (D1) Remediation for ResourceType1 (default: Instance)
-  ############################################
   RequiredTagsRemediationInstance:
     Type: AWS::Config::RemediationConfiguration
     Properties:
@@ -199,9 +174,6 @@ Resources:
           StaticValue:
             Values: [ !Ref Tag2Value ]
 
-  ############################################
-  # (D2) Remediation for ResourceType2 (default: Volume)
-  ############################################
   RequiredTagsRemediationVolume:
     Type: AWS::Config::RemediationConfiguration
     Properties:
