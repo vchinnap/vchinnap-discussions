@@ -8,7 +8,7 @@ Parameters:
     Description: Deployment account (for information only)
 
 Resources:
-  # 1) Lambda execution role (unchanged)
+  # 1) Lambda execution role
   EvalRole:
     Type: AWS::IAM::Role
     Properties:
@@ -27,14 +27,14 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow                     # list tags on any role
+              - Effect: Allow
                 Action: iam:ListRoleTags
                 Resource: '*'
-              - Effect: Allow                     # publish evaluations
+              - Effect: Allow
                 Action: config:PutEvaluations
                 Resource: '*'
 
-  # 2) Lambda function (inline code preserved)
+  # 2) Lambda function (inline)
   EvaluatorFn:
     Type: AWS::Lambda::Function
     Properties:
@@ -56,18 +56,21 @@ Resources:
               re.compile(r"AWS-QuickSetup-.*Role.*"),
           ]
 
-          APP_CAT_KEYS = {'appcatid', 'appcatid', 'app cat id'}
-          SUP_TEAM_KEYS = {'supportteam', 'support-team', 'support team'}
+          # Accept common variants; keys normalized to lowercase/no space/dash
+          APP_CAT_KEYS = {'appcatid', 'app cat id', 'app-cat-id'}
+          SUP_TEAM_KEYS = {'supportteam', 'support team', 'support-team'}
 
           def _norm(key: str) -> str:
               return ''.join(key.split()).replace('-', '').lower()
 
           def evaluate(role_name: str):
+              # Only evaluate service-linked / quick-setup roles
               if not any(p.match(role_name) for p in PATTERNS):
                   return 'COMPLIANT', 'Not service-linked role'
 
-              tags = iam.list_role_tags(RoleName=role_name)['Tags']
+              tags = iam.list_role_tags(RoleName=role_name).get('Tags', [])
               have = {_norm(t['Key']) for t in tags}
+
               missing = []
               if not (APP_CAT_KEYS & have):
                   missing.append('AppCatId')
@@ -103,7 +106,7 @@ Resources:
               print(">>> put_evaluations payload", json.dumps(payload, indent=2))
               cfg.put_evaluations(**payload)
 
-  # Allow AWS Config to invoke the Lambda
+  # 3) Allow AWS Config to invoke the Lambda
   LambdaInvokePerm:
     Type: AWS::Lambda::Permission
     Properties:
@@ -112,9 +115,12 @@ Resources:
       Principal: config.amazonaws.com
       SourceAccount: !Ref AccountId
 
-  # 3) AWS Config custom rule (unchanged wiring)
+  # 4) AWS Config custom rule (correct attributes at resource level)
   SlrRule:
     Type: AWS::Config::ConfigRule
+    DependsOn: LambdaInvokePerm
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       ConfigRuleName: OMBASR-ConfigRule-OPS-EC2-SupportTagCheck
       Description: Validate required tags on service-linked IAM roles
@@ -128,10 +134,8 @@ Resources:
             MessageType: ConfigurationItemChangeNotification
           - EventSource: aws.config
             MessageType: OversizedConfigurationItemChangeNotification
-      DeletionPolicy: Delete
-      UpdateReplacePolicy: Delete
 
-  # 4) Remediation IAM role (used by SSM Automation as AutomationAssumeRole)
+  # 5) Remediation IAM role (AutomationAssumeRole)
   RemediationRole:
     Type: AWS::IAM::Role
     Properties:
@@ -162,7 +166,7 @@ Resources:
                   - logs:PutLogEvents
                 Resource: "*"
 
-  # 5) SSM Automation document (adds missing tags)
+  # 6) SSM Automation document (adds missing tags)
   RemediateDoc:
     Type: AWS::SSM::Document
     Properties:
@@ -200,8 +204,6 @@ Resources:
                 supteam: "{{ SupportTeam }}"
               Script: |
                 import boto3
-                import botocore
-
                 iam = boto3.client('iam')
 
                 def _norm(k): return ''.join(k.split()).replace('-', '').lower()
@@ -211,7 +213,7 @@ Resources:
                     appcat = event['appcat']
                     supteam = event['supteam']
 
-                    have = set(_norm(t['Key']) for t in iam.list_role_tags(RoleName=role)['Tags'])
+                    have = set(_norm(t['Key']) for t in iam.list_role_tags(RoleName=role).get('Tags', []))
                     to_add = []
                     if 'appcatid' not in have:
                         to_add.append({'Key': 'AppCatId', 'Value': appcat})
@@ -223,7 +225,7 @@ Resources:
                         return {"changed": True, "added": to_add}
                     return {"changed": False, "added": []}
 
-  # 6) Config RemediationConfiguration (wires rule -> SSM document)
+  # 7) Config RemediationConfiguration (rule -> SSM doc)
   SlrRemediation:
     Type: AWS::Config::RemediationConfiguration
     Properties:
@@ -232,7 +234,7 @@ Resources:
       TargetType: SSM_DOCUMENT
       TargetId: !Ref RemediateDoc
       TargetVersion: "$DEFAULT"
-      Automatic: false                         # set to true if you want auto-remediation
+      Automatic: false         # set to true if you want auto-remediation
       ExecutionControls:
         SsmControls:
           ConcurrentExecutionRatePercentage: 10
@@ -247,7 +249,7 @@ Resources:
             Value: RESOURCE_ID
         AppCatId:
           StaticValue:
-            Values: ["UNKNOWN"]                # override in console if needed
+            Values: ["UNKNOWN"]    # override per run if needed
         SupportTeam:
           StaticValue:
             Values: ["UNKNOWN"]
