@@ -1,0 +1,252 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Custom AWS Config rule that evaluates IAM Role tags and provides SSM remediation.
+
+Resources:
+  # 1) Lambda execution role
+  EvalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: OMBASR-RoleEvaluate-OPS-EC2-SupportTagCheck
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EvalInline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:ListRoleTags
+                Resource: '*'
+              - Effect: Allow
+                Action: config:PutEvaluations
+                Resource: '*'
+
+  # 2) Lambda function (inline)
+  EvaluatorFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: OMBASR-LambdaEvaluate-OPS-EC2-SupportTagCheck
+      Runtime: python3.11
+      Handler: index.main
+      Role: !GetAtt EvalRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json, re, boto3
+
+          iam = boto3.client('iam')
+          cfg = boto3.client('config')
+
+          # Service-linked role patterns
+          PATTERNS = [
+              re.compile(r"AWSServiceRoleFor.*"),
+              re.compile(r"AWS-QuickSetup-.*Role.*"),
+          ]
+
+          APP_CAT_KEYS = {'appcatid', 'app cat id', 'app-cat-id'}
+          SUP_TEAM_KEYS = {'supportteam', 'support team', 'support-team'}
+
+          def _norm(key: str) -> str:
+              return ''.join(key.split()).replace('-', '').lower()
+
+          def evaluate(role_name: str):
+              if not any(p.match(role_name) for p in PATTERNS):
+                  return 'COMPLIANT', 'Not service-linked role'
+
+              tags = iam.list_role_tags(RoleName=role_name).get('Tags', [])
+              have = {_norm(t['Key']) for t in tags}
+
+              missing = []
+              if not (APP_CAT_KEYS & have):
+                  missing.append('AppCatId')
+              if not (SUP_TEAM_KEYS & have):
+                  missing.append('SupportTeam')
+
+              if missing:
+                  return 'NON_COMPLIANT', f"Missing {', '.join(missing)} tags"
+              return 'COMPLIANT', 'All mandatory tags present'
+
+          def main(event, context):
+              print(">>> RAW EVENT =", json.dumps(event, indent=2))
+              inv = json.loads(event['invokingEvent'])
+              ci = inv.get('configurationItem', {})
+
+              if ci.get('resourceType') != 'AWS::IAM::Role':
+                  return
+
+              role_name = ci['resourceName']
+              status, note = evaluate(role_name)
+
+              payload = {
+                  "Evaluations": [{
+                      "ComplianceResourceType": ci['resourceType'],
+                      "ComplianceResourceId": role_name,
+                      "ComplianceType": status,
+                      "Annotation": note,
+                      "OrderingTimestamp": ci['configurationItemCaptureTime'],
+                  }],
+                  "ResultToken": event['resultToken'],
+              }
+
+              print(">>> put_evaluations payload", json.dumps(payload, indent=2))
+              cfg.put_evaluations(**payload)
+
+  # 3) Allow AWS Config to invoke the Lambda
+  LambdaInvokePerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EvaluatorFn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId   # 🔥 replaced parameter with pseudo
+
+  # 4) AWS Config custom rule
+  SlrRule:
+    Type: AWS::Config::ConfigRule
+    DependsOn: LambdaInvokePerm
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      ConfigRuleName: OMBASR-ConfigRule-OPS-EC2-SupportTagCheck
+      Description: Validate required tags on service-linked IAM roles
+      Scope:
+        ComplianceResourceTypes: [AWS::IAM::Role]
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !GetAtt EvaluatorFn.Arn
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+          - EventSource: aws.config
+            MessageType: OversizedConfigurationItemChangeNotification
+
+  # 5) Remediation IAM role
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: OMBASR-RemediateRole-OPS-EC2-SupportTagCheck
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: OMBASR-Remediate-IAMRoleTags
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
+                  - iam:GetRole
+                Resource: "arn:aws:iam::*:role/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # 6) SSM Automation document
+  RemediateDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: OMBASR-Remediation-OPS-EC2-SupportTagCheck
+      DocumentType: Automation
+      Content:
+        schemaVersion: '0.3'
+        description: "Add required tags (AppCatId, SupportTeam) to IAM Role."
+        assumeRole: "{{ AutomationAssumeRole }}"
+        parameters:
+          AutomationAssumeRole:
+            type: String
+          RoleName:
+            type: String
+          AppCatId:
+            type: String
+            default: "UNKNOWN"
+          SupportTeam:
+            type: String
+            default: "UNKNOWN"
+        mainSteps:
+          - name: EnsureTags
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: script_handler
+              InputPayload:
+                role_name: "{{ RoleName }}"
+                appcat: "{{ AppCatId }}"
+                supteam: "{{ SupportTeam }}"
+              Script: |
+                import boto3
+                iam = boto3.client('iam')
+
+                def _norm(k): return ''.join(k.split()).replace('-', '').lower()
+
+                def script_handler(event, context):
+                    role = event['role_name']
+                    appcat = event['appcat']
+                    supteam = event['supteam']
+
+                    have = set(_norm(t['Key']) for t in iam.list_role_tags(RoleName=role).get('Tags', []))
+                    to_add = []
+                    if 'appcatid' not in have:
+                        to_add.append({'Key': 'AppCatId', 'Value': appcat})
+                    if 'supportteam' not in have:
+                        to_add.append({'Key': 'SupportTeam', 'Value': supteam})
+
+                    if to_add:
+                        iam.tag_role(RoleName=role, Tags=to_add)
+                        return {"changed": True, "added": to_add}
+                    return {"changed": False, "added": []}
+
+  # 7) Config RemediationConfiguration
+  SlrRemediation:
+    Type: AWS::Config::RemediationConfiguration
+    Properties:
+      ConfigRuleName: !Ref SlrRule
+      ResourceType: AWS::IAM::Role
+      TargetType: SSM_DOCUMENT
+      TargetId: !Ref RemediateDoc
+      TargetVersion: "$DEFAULT"
+      Automatic: false
+      ExecutionControls:
+        SsmControls:
+          ConcurrentExecutionRatePercentage: 10
+          ErrorPercentage: 10
+      Parameters:
+        AutomationAssumeRole:
+          StaticValue:
+            Values:
+              - !GetAtt RemediationRole.Arn
+        RoleName:
+          ResourceValue:
+            Value: RESOURCE_ID
+        AppCatId:
+          StaticValue:
+            Values: ["UNKNOWN"]
+        SupportTeam:
+          StaticValue:
+            Values: ["UNKNOWN"]
+
+Outputs:
+  RuleName:
+    Value: !Ref SlrRule
+  LambdaEvaluator:
+    Value: !Ref EvaluatorFn
+  RemediationDocumentName:
+    Value: !Ref RemediateDoc
+  RemediationRoleArn:
+    Value: !GetAtt RemediationRole.Arn
