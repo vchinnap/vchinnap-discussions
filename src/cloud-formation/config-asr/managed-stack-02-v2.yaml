@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Managed AWS Config rule (REQUIRED_TAGS) for EC2 Instances with SSM remediation. Dynamic naming OMBASR-* pattern."
+
+Parameters:
+  Team:
+    Type: String
+    Default: hcops
+    Description: "Team identifier (e.g., hcops, sec, plat)."
+  Service:
+    Type: String
+    Default: ec2
+    Description: "Service identifier (e.g., ec2, iam, s3)."
+  Purpose:
+    Type: String
+    Default: requiredtags
+    Description: "Purpose suffix (e.g., checkname, requiredtags)."
+
+  DefaultAppCatId:
+    Type: String
+    Default: UNKNOWN
+  DefaultSupportTeam:
+    Type: String
+    Default: UNKNOWN
+
+Resources:
+  ########################################
+  # 1) Managed Config rule
+  ########################################
+  RequiredTagsRule:
+    Type: AWS::Config::ConfigRule
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      ConfigRuleName: !Sub "OMBASR-Configrule-${Team}-${Service}${Purpose}"
+      Description: !Sub "Check ${Service} Instances for required tags AppCatId and SupportTeam (${Team}/${Purpose})."
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::Instance
+      Source:
+        Owner: AWS
+        SourceIdentifier: REQUIRED_TAGS
+      InputParameters:
+        tag1Key: AppCatId
+        tag1Value: !Ref DefaultAppCatId
+        tag2Key: SupportTeam
+        tag2Value: !Ref DefaultSupportTeam
+
+  ########################################
+  # 2) Remediation IAM role
+  ########################################
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OMBASR-RoleRemediate-${Team}-${Service}${Purpose}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "OMBASR-Remediate-${Team}-${Service}${Purpose}"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:DescribeTags
+                  - ec2:DescribeInstances
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ########################################
+  # 3) SSM Automation document
+  ########################################
+  SetRequiredTagsDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Sub "OMBASR-SSMDocRemediate-${Team}-${Service}${Purpose}"
+      DocumentType: Automation
+      DocumentFormat: YAML
+      Content:
+        Fn::Sub: |
+          schemaVersion: '0.3'
+          description: "Add missing required tags (AppCatId, SupportTeam) to an ${Service} Instance for ${Team}/${Purpose}."
+          assumeRole: "{{ AutomationAssumeRole }}"
+          parameters:
+            AutomationAssumeRole:
+              type: String
+              description: "IAM role for Automation to perform tagging."
+            InstanceId:
+              type: String
+              description: "Target EC2 instance ID (e.g., i-0abc123...)."
+            AppCatId:
+              type: String
+              default: "${DefaultAppCatId}"
+            SupportTeam:
+              type: String
+              default: "${DefaultSupportTeam}"
+          mainSteps:
+            - name: EnsureTags
+              action: aws:executeScript
+              description: "Creates the required tags on the EC2 Instance if missing."
+              inputs:
+                Runtime: python3.11
+                Handler: script_handler
+                InputPayload:
+                  instance_id: "{{ InstanceId }}"
+                  appcat: "{{ AppCatId }}"
+                  supteam: "{{ SupportTeam }}"
+                Script: |
+                  import boto3
+                  ec2 = boto3.client('ec2')
+                  def script_handler(event, context):
+                      instance_id = event['instance_id']
+                      appcat = (event.get('appcat') or 'UNKNOWN')
+                      supteam = (event.get('supteam') or 'UNKNOWN')
+                      tags = [
+                          {'Key': 'AppCatId', 'Value': appcat},
+                          {'Key': 'SupportTeam', 'Value': supteam},
+                      ]
+                      ec2.create_tags(Resources=[instance_id], Tags=tags)
+                      return {"changed": True, "instance": instance_id, "tags_applied": tags}
+
+  ########################################
+  # 4) Config RemediationConfiguration
+  ########################################
+  RequiredTagsRemediationInstance:
+    Type: AWS::Config::RemediationConfiguration
+    Properties:
+      ConfigRuleName: !Ref RequiredTagsRule
+      ResourceType: AWS::EC2::Instance
+      TargetType: SSM_DOCUMENT
+      TargetId: !Ref SetRequiredTagsDoc
+      TargetVersion: "$DEFAULT"
+      Automatic: false
+      ExecutionControls:
+        SsmControls:
+          ConcurrentExecutionRatePercentage: 10
+          ErrorPercentage: 10
+      Parameters:
+        AutomationAssumeRole:
+          StaticValue:
+            Values: [ !GetAtt RemediationRole.Arn ]
+        InstanceId:
+          ResourceValue:
+            Value: RESOURCE_ID
+        AppCatId:
+          StaticValue:
+            Values: [ !Ref DefaultAppCatId ]
+        SupportTeam:
+          StaticValue:
+            Values: [ !Ref DefaultSupportTeam ]
+
+Outputs:
+  ManagedRuleName:
+    Value: !Ref RequiredTagsRule
+  RemediationDocumentName:
+    Value: !Ref SetRequiredTagsDoc
+  RemediationRoleArn:
+    Value: !GetAtt RemediationRole.Arn
