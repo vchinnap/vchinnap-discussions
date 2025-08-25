@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Managed AWS Config rule (REQUIRED_TAGS) for EC2 Instances with SSM remediation. Names are dynamic: ${NamePrefix}-${AWS::StackName}-...
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: OMSASR
+    Description: "Resource name prefix (e.g., OMSASR, OMBASR, HOPS). Combined with StackName."
+  Tag1Key:
+    Type: String
+    Default: AppCatId
+  Tag1Value:
+    Type: String
+    Default: UNKNOWN
+    Description: "Optional: comma-separated allowed values (first used by remediation if auto-fixing)"
+  Tag2Key:
+    Type: String
+    Default: SupportTeam
+  Tag2Value:
+    Type: String
+    Default: UNKNOWN
+    Description: "Optional: comma-separated allowed values (first used by remediation if auto-fixing)"
+
+Resources:
+  ############################################
+  # (A) Managed Config Rule: REQUIRED_TAGS
+  ############################################
+  RequiredTagsRule:
+    Type: AWS::Config::ConfigRule
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      ConfigRuleName: !Sub "${NamePrefix}-${AWS::StackName}-Managed-RequiredTags"
+      Description: "Checks required tags on EC2 Instances via managed rule REQUIRED_TAGS"
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::Instance
+      Source:
+        Owner: AWS
+        SourceIdentifier: REQUIRED_TAGS
+      InputParameters:
+        tag1Key: !Ref Tag1Key
+        tag1Value: !Ref Tag1Value
+        tag2Key: !Ref Tag2Key
+        tag2Value: !Ref Tag2Value
+
+  ############################################
+  # (B) Remediation Role for SSM Automation
+  ############################################
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NamePrefix}-${AWS::StackName}-RemediateRole-Managed-RequiredTags"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ssm.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${NamePrefix}-${AWS::StackName}-Remediate-EC2-Tagging"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Tagging permissions for EC2 instances
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:DescribeTags
+                  - ec2:DescribeInstances
+                Resource: "*"
+              # Logging for automation script
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ############################################
+  # (C) SSM Automation Document (runbook)
+  ############################################
+  SetRequiredTagsDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Sub "${NamePrefix}-${AWS::StackName}-Remediation-Managed-RequiredTags"
+      DocumentType: Automation
+      Content:
+        schemaVersion: '0.3'
+        description: "Add missing required tags to an EC2 Instance."
+        assumeRole: "{{ AutomationAssumeRole }}"
+        parameters:
+          AutomationAssumeRole:
+            type: String
+            description: "(Required) IAM role for Automation to perform tagging"
+          ResourceId:
+            type: String
+            description: "(Required) EC2 Instance ID (e.g., i-1234abcd)"
+          Tag1Key:
+            type: String
+          Tag1Value:
+            type: String
+          Tag2Key:
+            type: String
+          Tag2Value:
+            type: String
+        mainSteps:
+          - name: EnsureTags
+            action: aws:executeScript
+            description: "Creates tags on the EC2 Instance if missing"
+            inputs:
+              Runtime: python3.11
+              Handler: script_handler
+              InputPayload:
+                resource_id: "{{ ResourceId }}"
+                tag1_key: "{{ Tag1Key }}"
+                tag1_val: "{{ Tag1Value }}"
+                tag2_key: "{{ Tag2Key }}"
+                tag2_val: "{{ Tag2Value }}"
+              Script: |
+                import boto3
+                ec2 = boto3.client('ec2')
+
+                def _kv(key, val):
+                  if not key:
+                    return None
+                  # If value contains comma-separated list, pick first as default
+                  v = (val or "").split(",")[0].strip() if val else "UNKNOWN"
+                  return {"Key": key, "Value": v}
+
+                def script_handler(event, context):
+                  rid = event["resource_id"]
+                  tag1 = _kv(event.get("tag1_key"), event.get("tag1_val"))
+                  tag2 = _kv(event.get("tag2_key"), event.get("tag2_val"))
+                  to_apply = [t for t in [tag1, tag2] if t]
+                  if not to_apply:
+                    return {"changed": False, "reason": "No tags to apply"}
+                  ec2.create_tags(Resources=[rid], Tags=to_apply)
+                  return {"changed": True, "resource": rid, "tags_applied": to_apply}
+
+  ############################################
+  # (D) RemediationConfiguration (for EC2 only)
+  ############################################
+  RequiredTagsRemediationInstance:
+    Type: AWS::Config::RemediationConfiguration
+    Properties:
+      ConfigRuleName: !Ref RequiredTagsRule
+      ResourceType: AWS::EC2::Instance
+      TargetType: SSM_DOCUMENT
+      TargetId: !Ref SetRequiredTagsDoc
+      TargetVersion: "$DEFAULT"
+      Automatic: false
+      ExecutionControls:
+        SsmControls:
+          ConcurrentExecutionRatePercentage: 10
+          ErrorPercentage: 10
+      Parameters:
+        AutomationAssumeRole:
+          StaticValue:
+            Values: [ !GetAtt RemediationRole.Arn ]
+        ResourceId:
+          ResourceValue:
+            Value: RESOURCE_ID
+        Tag1Key:
+          StaticValue:
+            Values: [ !Ref Tag1Key ]
+        Tag1Value:
+          StaticValue:
+            Values: [ !Ref Tag1Value ]
+        Tag2Key:
+          StaticValue:
+            Values: [ !Ref Tag2Key ]
+        Tag2Value:
+          StaticValue:
+            Values: [ !Ref Tag2Value ]
+
+Outputs:
+  ManagedRuleName:
+    Value: !Ref RequiredTagsRule
+  RemediationDocumentName:
+    Value: !Ref SetRequiredTagsDoc
+  RemediationRoleArn:
+    Value: !GetAtt RemediationRole.Arn
