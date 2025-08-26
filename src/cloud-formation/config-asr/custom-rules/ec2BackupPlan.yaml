@@ -1,0 +1,346 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Custom AWS Config rule (EC2 snapshot freshness) + SSM remediation using OMBASR-* naming."
+
+Parameters:
+  Team:
+    Type: String
+    Default: hcops
+    Description: "Team identifier (e.g., hcops, sec, plat)."
+  Service:
+    Type: String
+    Default: ec2
+    Description: "Service identifier (e.g., ec2, iam, s3)."
+  Purpose:
+    Type: String
+    Default: backupplan
+    Description: "Purpose suffix (e.g., backupplan)."
+  # Optional: tag values to stamp on snapshots created by remediation
+  DefaultAppCatId:
+    Type: String
+    Default: UNKNOWN
+  DefaultSupportTeam:
+    Type: String
+    Default: UNKNOWN
+
+Resources:
+  ########################################
+  # 1) Lambda execution role (evaluation)
+  ########################################
+  EvalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OMBASR-RoleEvaluate-${Team}-${Service}${Purpose}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "OMBASR-EvalInline-${Team}-${Service}${Purpose}"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeSnapshots
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - config:PutEvaluations
+                Resource: "*"
+
+  ########################################
+  # 2) Custom rule evaluator Lambda (your exact code)
+  ########################################
+  EvaluatorFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "OMBASR-LambdaEvaluate-${Team}-${Service}${Purpose}"
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt EvalRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          from datetime import datetime, timezone, timedelta
+
+          config = boto3.client('config')
+          ec2 = boto3.client('ec2')
+
+          def lambda_handler(event, context):
+              result_token = event.get('resultToken', 'TESTMODE')
+              evaluations = []
+
+              # Get all EC2s with tag ConfigRule=True
+              response = ec2.describe_instances(
+                  Filters=[
+                      {'Name': 'tag:ConfigRule', 'Values': ['True']}
+                  ]
+              )
+
+              for reservation in response['Reservations']:
+                  for instance in reservation['Instances']:
+                      instance_id = instance['InstanceId']
+                      timestamp = instance['LaunchTime']
+                      compliance_type = 'NON_COMPLIANT'
+                      annotation = ''
+                      root_volume_id = None
+
+                      # Fetch tags and root volume
+                      tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                      snapshot_required_tag = tags.get('snapshot_required')
+
+                      root_device_name = instance.get('RootDeviceName')
+                      block_devices = instance.get('BlockDeviceMappings', [])
+                      for device in block_devices:
+                          if device['DeviceName'] == root_device_name and 'Ebs' in device:
+                              root_volume_id = device['Ebs']['VolumeId']
+                              break
+
+                      # Validate tag presence and value
+                      if snapshot_required_tag is None:
+                          annotation = f"Tag 'snapshot_required' is missing (Root volume: {root_volume_id or 'not found'})"
+                      elif snapshot_required_tag != 'Yes':
+                          annotation = f"Tag 'snapshot_required' is not set to 'Yes' (Found: '{snapshot_required_tag}'; Root volume: {root_volume_id or 'not found'})"
+                      elif not root_volume_id:
+                          annotation = f"Root volume not found for instance {instance_id}"
+                      else:
+                          # Check snapshots for the root volume
+                          snapshots = ec2.describe_snapshots(
+                              Filters=[{'Name': 'volume-id', 'Values': [root_volume_id]}],
+                              OwnerIds=['self']
+                          )['Snapshots']
+
+                          if not snapshots:
+                              annotation = f"No snapshots found for root volume {root_volume_id}"
+                          else:
+                              latest_snapshot = max(snapshots, key=lambda x: x['StartTime'])
+                              now = datetime.now(timezone.utc)
+
+                              if latest_snapshot['StartTime'] >= now - timedelta(days=1):
+                                  compliance_type = 'COMPLIANT'
+                                  annotation = (
+                                      f"Snapshot found for root volume {root_volume_id}: "
+                                      f"{latest_snapshot['SnapshotId']} on {latest_snapshot['StartTime']}"
+                                  )
+                              else:
+                                  annotation = (
+                                      f"Only outdated snapshots found for root volume {root_volume_id}. "
+                                      f"Latest: {latest_snapshot['SnapshotId']} on {latest_snapshot['StartTime']}"
+                                  )
+
+                      evaluations.append({
+                          'ComplianceResourceType': 'AWS::EC2::Instance',
+                          'ComplianceResourceId': instance_id,
+                          'ComplianceType': compliance_type,
+                          'Annotation': annotation,
+                          'OrderingTimestamp': timestamp
+                      })
+
+              if result_token != 'TESTMODE' and evaluations:
+                  config.put_evaluations(
+                      Evaluations=evaluations,
+                      ResultToken=result_token
+                  )
+
+              return {
+                  'status': 'completed',
+                  'evaluated': len(evaluations)
+              }
+
+  ########################################
+  # 3) Allow AWS Config to invoke the Lambda
+  ########################################
+  LambdaInvokePerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EvaluatorFn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  ########################################
+  # 4) AWS Config rule (custom lambda)
+  ########################################
+  SnapshotFreshnessRule:
+    Type: AWS::Config::ConfigRule
+    DependsOn: LambdaInvokePerm
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      ConfigRuleName: !Sub "OMBASR-Configrule-${Team}-${Service}${Purpose}"
+      Description: !Sub "Ensure EC2 instances (tag: ConfigRule=True, snapshot_required=Yes) have a fresh root-volume snapshot (<= 1 day) for ${Team}/${Service}${Purpose}."
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::Instance
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !GetAtt EvaluatorFn.Arn
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+          - EventSource: aws.config
+            MessageType: OversizedConfigurationItemChangeNotification
+          - EventSource: aws.config
+            MessageType: ScheduledNotification
+      MaximumExecutionFrequency: TwentyFour_Hours   # ensure periodic freshness checks
+
+  ########################################
+  # 5) Remediation execution role (SSM)
+  ########################################
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OMBASR-RoleRemediate-${Team}-${Service}${Purpose}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ssm.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "OMBASR-Remediate-${Team}-${Service}${Purpose}"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeSnapshots
+                  - ec2:CreateSnapshot
+                  - ec2:CreateTags
+                Resource: "*"
+              # Optional KMS for encrypted volumes (safe to include)
+              - Effect: Allow
+                Action:
+                  - kms:CreateGrant
+                  - kms:DescribeKey
+              # Use * to avoid blocking on unknown CMKs; scope down if you know keys
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ########################################
+  # 6) SSM Automation Document (remediation)
+  ########################################
+  CreateFreshSnapshotDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Sub "OMBASR-SSMDocRemediate-${Team}-${Service}${Purpose}"
+      DocumentType: Automation
+      DocumentFormat: YAML
+      Content:
+        Fn::Sub: |
+          schemaVersion: '0.3'
+          description: "Create a fresh snapshot for the root volume of an EC2 instance (used when rule is NON_COMPLIANT)."
+          assumeRole: "{{ AutomationAssumeRole }}"
+          parameters:
+            AutomationAssumeRole:
+              type: String
+              description: "IAM role for Automation to perform EC2 actions."
+            InstanceId:
+              type: String
+              description: "Target EC2 Instance ID."
+            AppCatId:
+              type: String
+              default: "${DefaultAppCatId}"
+            SupportTeam:
+              type: String
+              default: "${DefaultSupportTeam}"
+          mainSteps:
+            - name: CreateFreshSnapshot
+              action: aws:executeScript
+              description: "Find root volume and create a snapshot with helpful tags."
+              inputs:
+                Runtime: python3.11
+                Handler: script_handler
+                InputPayload:
+                  instance_id: "{{ InstanceId }}"
+                  appcat: "{{ AppCatId }}"
+                  supteam: "{{ SupportTeam }}"
+                Script: |
+                  import boto3, datetime
+                  ec2 = boto3.client('ec2')
+
+                  def _get_root_volume_id(instance):
+                      root = instance.get('RootDeviceName')
+                      for bd in instance.get('BlockDeviceMappings', []):
+                          if bd.get('DeviceName') == root and 'Ebs' in bd:
+                              return bd['Ebs']['VolumeId']
+                      return None
+
+                  def script_handler(event, context):
+                      iid = event['instance_id']
+                      # Describe instance
+                      res = ec2.describe_instances(InstanceIds=[iid])
+                      insts = [i for r in res['Reservations'] for i in r['Instances']]
+                      if not insts:
+                          return {"changed": False, "message": f"Instance {iid} not found"}
+                      inst = insts[0]
+                      vol_id = _get_root_volume_id(inst)
+                      if not vol_id:
+                          return {"changed": False, "message": f"Root volume not found for {iid}"}
+                      # Create snapshot
+                      desc = f"OMBASR fresh snapshot of root volume {vol_id} for {iid}"
+                      snap = ec2.create_snapshot(VolumeId=vol_id, Description=desc)
+                      sid = snap['SnapshotId']
+                      # Tag it
+                      tags = [
+                        {'Key': 'AppCatId', 'Value': event.get('appcat','UNKNOWN') or 'UNKNOWN'},
+                        {'Key': 'SupportTeam', 'Value': event.get('supteam','UNKNOWN') or 'UNKNOWN'},
+                        {'Key': 'CreatedBy', 'Value': 'SSM-OMBASR-Remediation'},
+                        {'Key': 'InstanceId', 'Value': iid},
+                        {'Key': 'RootVolumeId', 'Value': vol_id},
+                      ]
+                      ec2.create_tags(Resources=[sid], Tags=tags)
+                      return {"changed": True, "snapshot_id": sid, "root_volume": vol_id}
+
+  ########################################
+  # 7) Config Remediation Configuration
+  ########################################
+  SnapshotFreshnessRemediation:
+    Type: AWS::Config::RemediationConfiguration
+    Properties:
+      ConfigRuleName: !Ref SnapshotFreshnessRule
+      ResourceType: AWS::EC2::Instance
+      TargetType: SSM_DOCUMENT
+      TargetId: !Ref CreateFreshSnapshotDoc
+      TargetVersion: "$DEFAULT"
+      Automatic: false
+      ExecutionControls:
+        SsmControls:
+          ConcurrentExecutionRatePercentage: 10
+          ErrorPercentage: 10
+      Parameters:
+        AutomationAssumeRole:
+          StaticValue:
+            Values: [ !GetAtt RemediationRole.Arn ]
+        InstanceId:
+          ResourceValue:
+            Value: RESOURCE_ID
+        AppCatId:
+          StaticValue:
+            Values: [ !Ref DefaultAppCatId ]
+        SupportTeam:
+          StaticValue:
+            Values: [ !Ref DefaultSupportTeam ]
+
+Outputs:
+  RuleName:
+    Value: !Ref SnapshotFreshnessRule
+  LambdaEvaluator:
+    Value: !Ref EvaluatorFn
+  RemediationDocumentName:
+    Value: !Ref CreateFreshSnapshotDoc
+  RemediationRoleArn:
+    Value: !GetAtt RemediationRole.Arn
