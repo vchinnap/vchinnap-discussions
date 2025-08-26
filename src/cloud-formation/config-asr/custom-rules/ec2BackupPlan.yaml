@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "Custom AWS Config rule (EC2 snapshot freshness) + SSM remediation using OMBASR-* naming."
+Description: "Custom AWS Config rule (EC2 backup plan snapshot freshness) + SSM remediation. Names follow OMBASR-* pattern."
 
 Parameters:
   Team:
@@ -14,7 +14,6 @@ Parameters:
     Type: String
     Default: backupplan
     Description: "Purpose suffix (e.g., backupplan)."
-  # Optional: tag values to stamp on snapshots created by remediation
   DefaultAppCatId:
     Type: String
     Default: UNKNOWN
@@ -49,8 +48,7 @@ Resources:
                   - ec2:DescribeSnapshots
                 Resource: "*"
               - Effect: Allow
-                Action:
-                  - config:PutEvaluations
+                Action: config:PutEvaluations
                 Resource: "*"
 
   ########################################
@@ -61,7 +59,7 @@ Resources:
     Properties:
       FunctionName: !Sub "OMBASR-LambdaEvaluate-${Team}-${Service}${Purpose}"
       Runtime: python3.11
-      Handler: index.lambda_handler
+      Handler: index.lambda_handler           # matches your function name
       Role: !GetAtt EvalRole.Arn
       Timeout: 60
       Code:
@@ -165,9 +163,9 @@ Resources:
       SourceAccount: !Ref AWS::AccountId
 
   ########################################
-  # 4) AWS Config rule (custom lambda)
+  # 4) AWS Config rule (custom lambda) — same shape as your sample
   ########################################
-  SnapshotFreshnessRule:
+  BackupPlanRule:
     Type: AWS::Config::ConfigRule
     DependsOn: LambdaInvokePerm
     DeletionPolicy: Delete
@@ -176,8 +174,7 @@ Resources:
       ConfigRuleName: !Sub "OMBASR-Configrule-${Team}-${Service}${Purpose}"
       Description: !Sub "Ensure EC2 instances (tag: ConfigRule=True, snapshot_required=Yes) have a fresh root-volume snapshot (<= 1 day) for ${Team}/${Service}${Purpose}."
       Scope:
-        ComplianceResourceTypes:
-          - AWS::EC2::Instance
+        ComplianceResourceTypes: [AWS::EC2::Instance]
       Source:
         Owner: CUSTOM_LAMBDA
         SourceIdentifier: !GetAtt EvaluatorFn.Arn
@@ -186,9 +183,6 @@ Resources:
             MessageType: ConfigurationItemChangeNotification
           - EventSource: aws.config
             MessageType: OversizedConfigurationItemChangeNotification
-          - EventSource: aws.config
-            MessageType: ScheduledNotification
-      MaximumExecutionFrequency: TwentyFour_Hours   # ensure periodic freshness checks
 
   ########################################
   # 5) Remediation execution role (SSM)
@@ -216,13 +210,6 @@ Resources:
                   - ec2:CreateSnapshot
                   - ec2:CreateTags
                 Resource: "*"
-              # Optional KMS for encrypted volumes (safe to include)
-              - Effect: Allow
-                Action:
-                  - kms:CreateGrant
-                  - kms:DescribeKey
-              # Use * to avoid blocking on unknown CMKs; scope down if you know keys
-                Resource: "*"
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -231,7 +218,7 @@ Resources:
                 Resource: "*"
 
   ########################################
-  # 6) SSM Automation Document (remediation)
+  # 6) SSM Automation Document (create fresh snapshot)
   ########################################
   CreateFreshSnapshotDoc:
     Type: AWS::SSM::Document
@@ -242,7 +229,7 @@ Resources:
       Content:
         Fn::Sub: |
           schemaVersion: '0.3'
-          description: "Create a fresh snapshot for the root volume of an EC2 instance (used when rule is NON_COMPLIANT)."
+          description: "Create a fresh snapshot for the root volume of an EC2 instance."
           assumeRole: "{{ AutomationAssumeRole }}"
           parameters:
             AutomationAssumeRole:
@@ -269,7 +256,7 @@ Resources:
                   appcat: "{{ AppCatId }}"
                   supteam: "{{ SupportTeam }}"
                 Script: |
-                  import boto3, datetime
+                  import boto3
                   ec2 = boto3.client('ec2')
 
                   def _get_root_volume_id(instance):
@@ -308,10 +295,10 @@ Resources:
   ########################################
   # 7) Config Remediation Configuration
   ########################################
-  SnapshotFreshnessRemediation:
+  BackupPlanRemediation:
     Type: AWS::Config::RemediationConfiguration
     Properties:
-      ConfigRuleName: !Ref SnapshotFreshnessRule
+      ConfigRuleName: !Ref BackupPlanRule
       ResourceType: AWS::EC2::Instance
       TargetType: SSM_DOCUMENT
       TargetId: !Ref CreateFreshSnapshotDoc
@@ -337,7 +324,7 @@ Resources:
 
 Outputs:
   RuleName:
-    Value: !Ref SnapshotFreshnessRule
+    Value: !Ref BackupPlanRule
   LambdaEvaluator:
     Value: !Ref EvaluatorFn
   RemediationDocumentName:
