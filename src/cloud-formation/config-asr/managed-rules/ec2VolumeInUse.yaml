@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Managed AWS Config rule (EC2_VOLUME_INUSE_CHECK) for EBS Volumes with SSM remediation. Dynamic naming OMBASR-* pattern."
+
+Parameters:
+  Team:
+    Type: String
+    Default: hcops
+    Description: "Team identifier (e.g., hcops, sec, plat)."
+  Service:
+    Type: String
+    Default: ec2
+    Description: "Service identifier (e.g., ec2, iam, s3)."
+  Purpose:
+    Type: String
+    Default: volinuse
+    Description: "Purpose suffix (e.g., volinuse)."
+
+Resources:
+  ########################################
+  # 1) Managed Config rule
+  ########################################
+  VolumeInUseRule:
+    Type: AWS::Config::ConfigRule
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      ConfigRuleName: !Sub "OMBASR-Configrule-${Team}-${Service}${Purpose}"
+      Description: !Sub "Ensure EBS volumes are attached (EC2_VOLUME_INUSE_CHECK) for ${Team}/${Purpose}."
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::Volume
+      Source:
+        Owner: AWS
+        SourceIdentifier: EC2_VOLUME_INUSE_CHECK
+
+  ########################################
+  # 2) Remediation IAM role
+  ########################################
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OMBASR-RoleRemediate-${Team}-${Service}${Purpose}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "OMBASR-Remediate-${Team}-${Service}${Purpose}"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVolumes
+                  - ec2:DeleteVolume
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ########################################
+  # 3) SSM Automation document
+  ########################################
+  DeleteUnusedVolumeDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Sub "OMBASR-SSMDocRemediate-${Team}-${Service}${Purpose}"
+      DocumentType: Automation
+      DocumentFormat: YAML
+      Content:
+        Fn::Sub: |
+          schemaVersion: '0.3'
+          description: "Delete unattached (available) EBS volume for ${Team}/${Purpose}."
+          assumeRole: "{{ AutomationAssumeRole }}"
+          parameters:
+            AutomationAssumeRole:
+              type: String
+              description: "IAM role for Automation to perform EC2 actions."
+            VolumeId:
+              type: String
+              description: "Target EBS Volume ID (e.g., vol-0abc123...)."
+            DryRun:
+              type: Boolean
+              default: true
+              description: "If true, do not delete; just validate."
+          mainSteps:
+            - name: DeleteIfAvailable
+              action: aws:executeScript
+              description: "Deletes the EBS volume only if it is in 'available' (unattached) state."
+              inputs:
+                Runtime: python3.11
+                Handler: script_handler
+                InputPayload:
+                  volume_id: "{{ VolumeId }}"
+                  dry_run: "{{ DryRun }}"
+                Script: |
+                  import json
+                  import boto3
+                  from botocore.exceptions import ClientError
+
+                  ec2 = boto3.client('ec2')
+
+                  def script_handler(event, context):
+                      vol_id = event['volume_id']
+                      dry_run = str(event.get('dry_run', True)).lower() in ('true', '1', 'yes')
+                      resp = ec2.describe_volumes(VolumeIds=[vol_id])
+                      vols = resp.get('Volumes', [])
+                      if not vols:
+                          return {"changed": False, "message": f"Volume {vol_id} not found."}
+
+                      state = vols[0].get('State')
+                      attachments = vols[0].get('Attachments', [])
+                      if state != 'available' or attachments:
+                          return {
+                              "changed": False,
+                              "message": f"Volume {vol_id} not deleted because state={state}, attachments={len(attachments)}"
+                          }
+
+                      if dry_run:
+                          return {"changed": False, "message": f"DryRun: Volume {vol_id} would be deleted (state=available)."}
+
+                      try:
+                          ec2.delete_volume(VolumeId=vol_id)
+                          return {"changed": True, "message": f"Volume {vol_id} deleted."}
+                      except ClientError as e:
+                          return {"changed": False, "error": str(e)}
+
+  ########################################
+  # 4) Config RemediationConfiguration
+  ########################################
+  VolumeInUseRemediation:
+    Type: AWS::Config::RemediationConfiguration
+    Properties:
+      ConfigRuleName: !Ref VolumeInUseRule
+      ResourceType: AWS::EC2::Volume
+      TargetType: SSM_DOCUMENT
+      TargetId: !Ref DeleteUnusedVolumeDoc
+      TargetVersion: "$DEFAULT"
+      Automatic: false
+      ExecutionControls:
+        SsmControls:
+          ConcurrentExecutionRatePercentage: 10
+          ErrorPercentage: 10
+      Parameters:
+        AutomationAssumeRole:
+          StaticValue:
+            Values: [ !GetAtt RemediationRole.Arn ]
+        VolumeId:
+          ResourceValue:
+            Value: RESOURCE_ID
+        DryRun:
+          StaticValue:
+            Values: [ "true" ]
+
+Outputs:
+  ManagedRuleName:
+    Value: !Ref VolumeInUseRule
+  RemediationDocumentName:
+    Value: !Ref DeleteUnusedVolumeDoc
+  RemediationRoleArn:
+    Value: !GetAtt RemediationRole.Arn
