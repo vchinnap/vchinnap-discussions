@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "Managed AWS Config rule (EC2_VOLUME_INUSE_CHECK) for EBS Volumes with SSM remediation. Dynamic naming OMBASR-* pattern."
+Description: "Managed AWS Config rule (EC2_VOLUME_INUSE_CHECK) for EBS Volumes with SSM remediation (Security Hub style). OMBASR-* pattern."
 
 Parameters:
   Team:
@@ -17,7 +17,7 @@ Parameters:
 
 Resources:
   ########################################
-  # 1) Managed Config rule
+  # 1) Managed Config rule (unchanged)
   ########################################
   VolumeInUseRule:
     Type: AWS::Config::ConfigRule
@@ -34,7 +34,7 @@ Resources:
         SourceIdentifier: EC2_VOLUME_INUSE_CHECK
 
   ########################################
-  # 2) Remediation IAM role  (ADD SecurityHub permission)
+  # 2) Remediation IAM role (adds Security Hub)
   ########################################
   RemediationRole:
     Type: AWS::IAM::Role
@@ -52,18 +52,15 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Read & delete volumes
               - Effect: Allow
                 Action:
                   - ec2:DescribeVolumes
                   - ec2:DeleteVolume
                 Resource: "*"
-              # Resolve Security Hub finding
               - Effect: Allow
                 Action:
                   - securityhub:BatchUpdateFindings
                 Resource: "*"
-              # Logging
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -72,7 +69,7 @@ Resources:
                 Resource: "*"
 
   ########################################
-  # 3) SSM Automation document (Security Hub → Delete unattached volume → Resolve)
+  # 3) SSM Automation document (Security Hub → delete → resolve)  [FIXED]
   ########################################
   DeleteUnusedVolumeDoc:
     Type: AWS::SSM::Document
@@ -81,14 +78,12 @@ Resources:
       DocumentType: Automation
       DocumentFormat: YAML
       Content:
-        # Keep as MAP (not multiline string) so SSM sees mainSteps
         schemaVersion: '0.3'
         description: !Sub >
           Parse Security Hub findings for unattached EBS volumes, delete if 'available',
           then mark the finding RESOLVED for ${Team}/${Purpose}.
         assumeRole: "{{ AutomationAssumeRole }}"
         parameters:
-          # Pass this in from the invoker (EventBridge/Lambda). You may set a default if you prefer.
           AutomationAssumeRole:
             type: String
             description: "Role that Automation assumes to perform actions."
@@ -103,10 +98,14 @@ Resources:
           FindingsJson:
             type: String
             description: "Security Hub findings array (ASFF) as JSON string."
+          # ---------- FIX: make DryRun a STRING, not Boolean ----------
           DryRun:
-            type: Boolean
-            default: true
-            description: "If true, only validate and annotate the finding; do not delete."
+            type: String
+            default: "true"
+            allowedValues:
+              - "true"
+              - "false"
+            description: "If 'true', validate only (no delete)."
         mainSteps:
           - name: ParseFindings
             description: "Extract first finding, ProductArn, Id, and AwsEc2Volume id."
@@ -130,11 +129,9 @@ Resources:
                     parn = f.get("ProductArn", "")
                     vol_id = ""
 
-                    # Extract EBS Volume from ASFF resources (type AwsEc2Volume)
                     for r in f.get("Resources", []):
                         if r.get("Type") == "AwsEc2Volume":
                             rid = r.get("Id") or ""
-                            # Id may be 'vol-xxxx' or an ARN; normalize to 'vol-xxxx'
                             if rid.startswith("arn:"):
                                 rid = rid.split("/")[-1]
                             vol_id = rid
@@ -156,7 +153,6 @@ Resources:
             action: aws:branch
             inputs:
               Choices:
-                # If no VolumeId in finding, still resolve to clear stale records
                 - NextStep: ResolveFindings
                   Variable: "{{ ParseFindings.VolumeId }}"
                   StringEquals: ""
@@ -200,7 +196,6 @@ Resources:
             action: aws:branch
             inputs:
               Choices:
-                # If not available (already attached/deleting/etc.), just resolve the finding
                 - NextStep: ResolveFindings
                   Variable: "{{ DescribeVolume.IsAvailable }}"
                   StringEquals: "false"
@@ -210,6 +205,7 @@ Resources:
             action: aws:branch
             inputs:
               Choices:
+                # ---------- FIX: compare string to string ----------
                 - NextStep: ResolveFindings
                   Variable: "{{ DryRun }}"
                   StringEquals: "true"
@@ -243,10 +239,11 @@ Resources:
                   '{{ ParseFindings.VolumeId }}'. DryRun={{ DryRun }}.
 
   ########################################
-  # 4) Config RemediationConfiguration (NOT USED with Security Hub runbook)
+  # 4) Config RemediationConfiguration (not used with Security Hub runbook)
   ########################################
-  # This runbook expects Security Hub 'FindingsJson' and cannot be invoked by
-  # AWS Config RemediationConfiguration. Trigger via EventBridge/Lambda instead.
+  # Trigger this runbook via EventBridge/Lambda (Security Hub ASFF input).
+  # If you want Config-triggered remediation instead, switch to a doc that
+  # accepts ResourceId directly and map RESOURCE_ID.
   #
   # VolumeInUseRemediation:
   #   Type: AWS::Config::RemediationConfiguration
@@ -268,10 +265,6 @@ Resources:
   #       AutomationAssumeRole:
   #         StaticValue:
   #           Values: [ !GetAtt RemediationRole.Arn ]
-  #       # This mapping works only for Config-triggered docs; not applicable here.
-  #       VolumeId:
-  #         ResourceValue:
-  #           Value: RESOURCE_ID
 
 Outputs:
   ManagedRuleName:
