@@ -1,0 +1,104 @@
+schemaVersion: '0.3'
+description: >
+  Parse Security Hub findings, tag EC2 instance with Name if present, and resolve findings.
+  Skips tagging if no EC2 instance present.
+assumeRole: arn:aws:iam::XXXXXXXXXXXX:role/OMBASR-RemediationRole-OPS-EC2-SupportTagCheck
+parameters:
+  AutomationAssumeRole:
+    default: arn:aws:iam::XXXXXXXXXXXX:role/OMBASR-RemediationRole-OPS-EC2-SupportTagCheck
+    description: Role that Automation assumes to perform actions.
+    type: String
+  AccountId:
+    default: XXXXXXXXXXXX
+    description: AWS account of the finding.
+    type: String
+  Region:
+    default: us-east-1
+    description: Event region.
+    type: String
+  FindingsJson:
+    description: JSON string of the Security Hub findings array passed from Lambda.
+    type: String
+
+mainSteps:
+  - description: Extract first finding, resource details, product ARN, and finding ID.
+    name: ParseFindings
+    action: aws:executeScript
+    nextStep: CheckIfInstanceFound
+    isEnd: false
+    inputs:
+      Runtime: python3.11
+      Handler: handler
+      InputPayload:
+        FindingsJson: '{{ FindingsJson }}'
+      Script: |
+        def handler(event, context):
+            import json
+            findings = json.loads(event['FindingsJson']) if isinstance(event.get('FindingsJson'), str) else event['FindingsJson']
+            if not findings:
+                return {"error": "NoFindings"}
+            f = findings[0]
+            out = {
+                "FindingId": f.get("Id"),
+                "ProductArn": f.get("ProductArn"),
+                "Region": f.get("Region"),
+                "InstanceId": None
+            }
+            # Look for EC2 instance resource
+            for r in f.get("Resources", []):
+                if r.get("Type") == "AwsEc2Instance":
+                    rid = r.get("Id") or ""
+                    if rid.startswith("arn:"):
+                        rid = rid.split("/")[-1]
+                    out["InstanceId"] = rid
+                    break
+            return out
+    outputs:
+      - Name: FindingId
+        Selector: $.Payload.FindingId
+        Type: String
+      - Name: ProductArn
+        Selector: $.Payload.ProductArn
+        Type: String
+      - Name: InstanceId
+        Selector: $.Payload.InstanceId
+        Type: String
+
+  - name: CheckIfInstanceFound
+    action: aws:branch
+    inputs:
+      Choices:
+        - NextStep: ResolveFindings
+          Variable: '{{ ParseFindings.InstanceId }}'
+          StringEquals: ''
+      Default: AddNameTag
+
+  - description: Add the 'Name' tag to the EC2 instance (idempotent).
+    name: AddNameTag
+    action: aws:executeAwsApi
+    nextStep: ResolveFindings
+    isEnd: false
+    inputs:
+      Service: ec2
+      Api: CreateTags
+      Resources:
+        - '{{ ParseFindings.InstanceId }}'
+      Tags:
+        - Key: Name
+          Value: '{{ ParseFindings.InstanceId }}'
+
+  - description: Mark the related Security Hub finding as RESOLVED.
+    name: ResolveFindings
+    action: aws:executeAwsApi
+    isEnd: true
+    inputs:
+      FindingIdentifiers:
+        - ProductArn: '{{ ParseFindings.ProductArn }}'
+          Id: '{{ ParseFindings.FindingId }}'
+      Note:
+        UpdatedBy: ASR-Automation
+        Text: Remediated via ASR Automation
+      Service: securityhub
+      Workflow:
+        Status: RESOLVED
+      Api: BatchUpdateFindings
