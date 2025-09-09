@@ -1,0 +1,18 @@
+[
+  {
+    "SchemaVersion": "2018-10-08",
+    "Id": "arn:aws:securityhub:us-east-1:123456789012:product/aws/config/OMBASR-Configrule-hcops-ec2requiredtag/abcd-1234",
+    "ProductArn": "arn:aws:securityhub:us-east-1::product/aws/config",
+    "GeneratorId": "config-rule/OMBASR-Configrule-hcops-ec2requiredtag",
+    "AwsAccountId": "123456789012",
+    "Region": "us-east-1",
+    "Resources": [
+      {
+        "Type": "AwsEc2Instance",
+        "Id": "arn:aws:ec2:us-east-1:123456789012:instance/i-0abc123def4567890",
+        "Partition": "aws",
+        "Region": "us-east-1"
+      }
+    ]
+  }
+]
