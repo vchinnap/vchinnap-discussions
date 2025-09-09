@@ -1,0 +1,385 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  OMBASR: Custom AWS Config rule (EC2 required tag) with Security Hub–style SSM remediation
+  (Parse → Branch → Describe → Act → Resolve). Keep DryRun as STRING to avoid SSM boolean/substring errors.
+  Enforces ${RequiredTagKey}=${RequiredTagValue} on instances with ConfigRule=True.
+
+Parameters:
+  # ===== Naming knobs used everywhere =====
+  Team:
+    Type: String
+    Default: hcops
+    Description: "Team identifier (e.g., hcops, sec, plat)."
+  Service:
+    Type: String
+    Default: ec2
+    Description: "Service identifier (e.g., ec2, s3, iam)."
+  Purpose:
+    Type: String
+    Default: requiredtag
+    Description: "Purpose suffix (e.g., requiredtag)."
+
+  # ===== Tag policy knobs =====
+  RequiredTagKey:
+    Type: String
+    Default: Snapshot_Required
+    Description: "Required tag key to enforce."
+  RequiredTagValue:
+    Type: String
+    Default: Yes
+    Description: "Required tag value to enforce."
+
+Resources:
+  ########################################
+  # 1) Custom Config rule (Lambda-backed)
+  ########################################
+  EvalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OMBASR-RoleEvaluate-${Team}-${Service}${Purpose}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "OMBASR-EvalInline-${Team}-${Service}${Purpose}"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                Resource: "*"
+              - Effect: Allow
+                Action: config:PutEvaluations
+                Resource: "*"
+
+  EvaluatorFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "OMBASR-LambdaEvaluate-${Team}-${Service}${Purpose}"
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt EvalRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          REQUIRED_TAG_KEY: !Ref RequiredTagKey
+          REQUIRED_TAG_VALUE: !Ref RequiredTagValue
+      Code:
+        ZipFile: |
+          import boto3, os
+          from datetime import datetime, timezone
+
+          config = boto3.client('config')
+          ec2 = boto3.client('ec2')
+
+          REQ_KEY = os.environ.get('REQUIRED_TAG_KEY', 'Snapshot_Required')
+          REQ_VAL = os.environ.get('REQUIRED_TAG_VALUE', 'Yes')
+
+          def _iter_instances():
+              token = None
+              while True:
+                  params = {'Filters':[{'Name':'tag:ConfigRule','Values':['True']}]}
+                  if token: params['NextToken'] = token
+                  resp = ec2.describe_instances(**params)
+                  for r in resp.get('Reservations', []):
+                      for i in r.get('Instances', []):
+                          yield i
+                  token = resp.get('NextToken')
+                  if not token: break
+
+          def _tag_val(tags, key):
+              for t in tags or []:
+                  if t.get('Key') == key:
+                      return t.get('Value')
+              return None
+
+          def _chunks(items, n=100):
+              for i in range(0, len(items), n):
+                  yield items[i:i+n]
+
+          def lambda_handler(event, context):
+              result_token = event.get('resultToken', 'TESTMODE')
+              now = datetime.now(timezone.utc)
+              evals = []
+
+              for inst in _iter_instances():
+                  iid = inst['InstanceId']
+                  val = _tag_val(inst.get('Tags', []), REQ_KEY)
+                  if val is None:
+                      comp = 'NON_COMPLIANT'
+                      anno = f"Required tag '{REQ_KEY}' is missing."
+                  elif val != REQ_VAL:
+                      comp = 'NON_COMPLIANT'
+                      anno = f"Required tag '{REQ_KEY}' should be '{REQ_VAL}', found '{val}'."
+                  else:
+                      comp = 'COMPLIANT'
+                      anno = f"Required tag '{REQ_KEY}'='{REQ_VAL}'."
+
+                  evals.append({
+                      'ComplianceResourceType': 'AWS::EC2::Instance',
+                      'ComplianceResourceId': iid,
+                      'ComplianceType': comp,
+                      'Annotation': (anno or '')[:256],
+                      'OrderingTimestamp': inst.get('LaunchTime', now)
+                  })
+
+              if result_token != 'TESTMODE' and evals:
+                  for batch in _chunks(evals, 100):
+                      config.put_evaluations(Evaluations=batch, ResultToken=result_token)
+
+              return {'status':'ok','evaluated':len(evals)}
+
+  LambdaInvokePerm:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EvaluatorFn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  RequiredTagRule:
+    Type: AWS::Config::ConfigRule
+    DependsOn: LambdaInvokePerm
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      ConfigRuleName: !Sub "OMBASR-Configrule-${Team}-${Service}${Purpose}"
+      Description: !Sub >
+        Ensure EC2 instances (tag: ConfigRule=True) have '${RequiredTagKey}=${RequiredTagValue}' for ${Team}/${Purpose}.
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::EC2::Instance
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !GetAtt EvaluatorFn.Arn
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+          - EventSource: aws.config
+            MessageType: OversizedConfigurationItemChangeNotification
+
+  ########################################
+  # 2) Remediation IAM role (least privilege for the runbook)
+  ########################################
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OMBASR-RoleRemediate-${Team}-${Service}${Purpose}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ssm.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "OMBASR-Remediate-${Team}-${Service}${Purpose}"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # APIs used by this runbook (EC2 tag set + describe)
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:CreateTags
+                Resource: "*"
+              # Resolve Security Hub finding
+              - Effect: Allow
+                Action: securityhub:BatchUpdateFindings
+                Resource: "*"
+              # (Optional) Logging to CloudWatch
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  ########################################
+  # 3) SSM Automation (Security Hub → Describe/Branch → Act → Resolve)
+  ########################################
+  EnsureRequiredTagDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Sub "OMBASR-SSMDocRemediate-${Team}-${Service}${Purpose}"
+      DocumentType: Automation
+      DocumentFormat: YAML
+      Content:
+        schemaVersion: '0.3'
+        description: !Sub >
+          Parse Security Hub findings, ensure EC2 instance has '${RequiredTagKey}=${RequiredTagValue}',
+          then RESOLVE the finding for ${Team}/${Purpose}. Keep DryRun as STRING.
+        assumeRole: "{{ AutomationAssumeRole }}"
+        parameters:
+          AutomationAssumeRole:
+            type: String
+            description: "Role Automation assumes (e.g., OMBASR-RoleRemediate-...)."
+          FindingsJson:
+            type: String
+            description: "Security Hub findings array (ASFF) as JSON string."
+          AsffResourceType:
+            type: String
+            default: AwsEc2Instance
+            description: "ASFF resource type to extract (defaults to EC2 instance)."
+          RequiredTagKey:
+            type: String
+            default: "${RequiredTagKey}"
+            description: "Required tag key."
+          RequiredTagValue:
+            type: String
+            default: "${RequiredTagValue}"
+            description: "Required tag value."
+          DryRun:
+            type: String
+            default: "true"
+            allowedValues: ["true","false"]
+            description: "If 'true', validate only (no tag change)."
+
+        mainSteps:
+          # 1) Parse
+          - name: ParseFindings
+            description: "Extract FindingId, ProductArn, and InstanceId from ASFF."
+            action: aws:executeScript
+            nextStep: CheckIfResourceFound
+            inputs:
+              Runtime: python3.11
+              Handler: handler
+              InputPayload:
+                FindingsJson: "{{ FindingsJson }}"
+                AsffResourceType: "{{ AsffResourceType }}"
+              Script: |
+                def handler(event, context):
+                    import json
+                    findings = event.get('FindingsJson')
+                    findings = json.loads(findings) if isinstance(findings, str) else findings
+                    rtype = event.get('AsffResourceType', 'AwsEc2Instance')
+                    if not findings:
+                        return {"FindingId":"", "ProductArn":"", "InstanceId":""}
+                    f = findings[0]
+                    out = {"FindingId": f.get("Id",""), "ProductArn": f.get("ProductArn",""), "InstanceId": ""}
+
+                    for r in f.get("Resources", []):
+                        if r.get("Type") == rtype:
+                            rid = (r.get("Id") or "")
+                            if rid.startswith("arn:"):
+                                rid = rid.split("/")[-1]  # arn:.../i-xxxx → i-xxxx
+                            out["InstanceId"] = rid
+                            break
+                    return out
+            outputs:
+              - { Name: FindingId,  Selector: $.Payload.FindingId,  Type: String }
+              - { Name: ProductArn, Selector: $.Payload.ProductArn, Type: String }
+              - { Name: InstanceId, Selector: $.Payload.InstanceId, Type: String }
+
+          # 2) Branch (no instance -> resolve)
+          - name: CheckIfResourceFound
+            action: aws:branch
+            inputs:
+              Choices:
+                - NextStep: ResolveFindings
+                  Variable: "{{ ParseFindings.InstanceId }}"
+                  StringEquals: ""
+              Default: DescribeInstance
+
+          # 3) Describe (read current tag value)
+          - name: DescribeInstance
+            description: "Retrieve current value of RequiredTagKey on the instance."
+            action: aws:executeScript
+            nextStep: CheckReadiness
+            inputs:
+              Runtime: python3.11
+              Handler: handler
+              InputPayload:
+                InstanceId: "{{ ParseFindings.InstanceId }}"
+                RequiredTagKey: "{{ RequiredTagKey }}"
+              Script: |
+                import boto3
+                def handler(event, context):
+                    ec2 = boto3.client("ec2")
+                    iid = event["InstanceId"]
+                    key = event["RequiredTagKey"]
+                    resp = ec2.describe_instances(InstanceIds=[iid])
+                    insts = [i for r in resp.get("Reservations",[]) for i in r.get("Instances",[])]
+                    if not insts:
+                        return {"Found":"false", "CurrentValue":""}
+                    tags = {t["Key"]:t["Value"] for t in insts[0].get("Tags",[])}
+                    return {"Found":"true", "CurrentValue": tags.get(key, "")}
+            outputs:
+              - { Name: Found,        Selector: $.Payload.Found,        Type: String }
+              - { Name: CurrentValue, Selector: $.Payload.CurrentValue, Type: String }
+
+          # 4) If already compliant or not found → resolve
+          - name: CheckReadiness
+            action: aws:branch
+            inputs:
+              Choices:
+                - NextStep: ResolveFindings
+                  Variable: "{{ DescribeInstance.Found }}"
+                  StringEquals: "false"
+                - NextStep: ResolveFindings
+                  Variable: "{{ DescribeInstance.CurrentValue }}"
+                  StringEquals: "{{ RequiredTagValue }}"
+              Default: CheckDryRun
+
+          # 5) Honor DryRun
+          - name: CheckDryRun
+            action: aws:branch
+            inputs:
+              Choices:
+                - NextStep: ResolveFindings
+                  Variable: "{{ DryRun }}"
+                  StringEquals: "true"
+              Default: Remediate
+
+          # 6) ACTION (set/overwrite the tag)
+          - name: Remediate
+            description: "Create/overwrite the required tag on the instance."
+            action: aws:executeAwsApi
+            nextStep: ResolveFindings
+            inputs:
+              Service: ec2
+              Api: CreateTags
+              Resources:
+                - "{{ ParseFindings.InstanceId }}"
+              Tags:
+                - Key: "{{ RequiredTagKey }}"
+                  Value: "{{ RequiredTagValue }}"
+
+          # 7) Resolve Security Hub
+          - name: ResolveFindings
+            description: "Mark the Security Hub finding as RESOLVED."
+            action: aws:executeAwsApi
+            isEnd: true
+            inputs:
+              Service: securityhub
+              Api: BatchUpdateFindings
+              FindingIdentifiers:
+                - ProductArn: "{{ ParseFindings.ProductArn }}"
+                  Id: "{{ ParseFindings.FindingId }}"
+              Workflow: { Status: RESOLVED }
+              Note:
+                UpdatedBy: OMBASR-Automation
+                Text: >-
+                  ${Service}/${Purpose} evaluated. Instance='{{ ParseFindings.InstanceId }}',
+                  Current='{{ DescribeInstance.CurrentValue }}', Required='{{ RequiredTagValue }}', DryRun='{{ DryRun }}'.
+
+  ########################################
+  # 4) (Intentionally omitted) Config → RemediationConfiguration
+  ########################################
+  # This runbook expects Security Hub ASFF (FindingsJson). Trigger via EventBridge/Lambda → StartAutomationExecution.
+  # No AWS::Config::RemediationConfiguration is created here.
+
+Outputs:
+  CustomRuleName:
+    Value: !Ref RequiredTagRule
+  LambdaEvaluatorName:
+    Value: !Ref EvaluatorFn
+  RemediationDocumentName:
+    Value: !Ref EnsureRequiredTagDoc
+  RemediationRoleArn:
+    Value: !GetAtt RemediationRole.Arn
