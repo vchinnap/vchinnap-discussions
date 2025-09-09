@@ -1,0 +1,212 @@
+########################################
+# 2) Remediation IAM role  (adds SecurityHub)
+########################################
+RemediationRole:
+  Type: AWS::IAM::Role
+  Properties:
+    RoleName: !Sub "OMBASR-RoleRemediate-${Team}-${Service}${Purpose}"
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: ssm.amazonaws.com
+          Action: sts:AssumeRole
+    Policies:
+      - PolicyName: !Sub "OMBASR-Remediate-${Team}-${Service}${Purpose}"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            # Describe & delete volumes
+            - Effect: Allow
+              Action:
+                - ec2:DescribeVolumes
+                - ec2:DeleteVolume
+              Resource: "*"
+            # Resolve Security Hub finding
+            - Effect: Allow
+              Action:
+                - securityhub:BatchUpdateFindings
+              Resource: "*"
+            # Logging
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: "*"
+
+########################################
+# 3) SSM Automation document (Security Hub → Delete unattached EBS → Resolve)
+########################################
+DeleteUnusedVolumeDoc:
+  Type: AWS::SSM::Document
+  Properties:
+    Name: !Sub "OMBASR-SSMDocRemediate-${Team}-${Service}${Purpose}"
+    DocumentType: Automation
+    DocumentFormat: YAML
+    Content:
+      schemaVersion: '0.3'
+      description: !Sub >
+        Parse Security Hub findings, delete EBS volume if it's 'available',
+        and resolve the finding for ${Team}/${Purpose}.
+      # IMPORTANT: assume via parameter (matches your pattern)
+      assumeRole: "{{ AutomationAssumeRole }}"
+      parameters:
+        # --- UPDATE THIS default if you want: put your role ARN here or pass at runtime ---
+        AutomationAssumeRole:
+          type: String
+          description: "Role that Automation assumes to perform actions."
+        AccountId:
+          type: String
+          default: ""
+          description: "AWS account of the finding (optional)."
+        Region:
+          type: String
+          default: ""
+          description: "Event region (optional)."
+        FindingsJson:
+          type: String
+          description: "JSON string of the Security Hub findings array (ASFF)."
+        # FIX: Use String for DryRun, since Boolean causes SSM 400 when used in branches/strings
+        DryRun:
+          type: String
+          default: "true"
+          allowedValues: ["true","false"]
+          description: "If 'true', validate only (no delete)."
+      mainSteps:
+        - description: Extract first finding, ProductArn, FindingId, and EBS VolumeId.
+          name: ParseFindings
+          action: aws:executeScript
+          nextStep: CheckIfVolumeFound
+          isEnd: false
+          inputs:
+            Runtime: python3.8        # widely supported by SSM Automation
+            Handler: handler
+            InputPayload:
+              FindingsJson: "{{ FindingsJson }}"
+            Script: |
+              def handler(event, context):
+                  import json
+                  findings = event.get('FindingsJson')
+                  findings = json.loads(findings) if isinstance(findings, str) else findings
+                  if not findings:
+                      return {"FindingId": "", "ProductArn": "", "VolumeId": ""}
+
+                  f = findings[0]
+                  out = {
+                      "FindingId": f.get("Id", ""),
+                      "ProductArn": f.get("ProductArn", ""),
+                      "VolumeId": ""
+                  }
+                  for r in f.get("Resources", []):
+                      if r.get("Type") == "AwsEc2Volume":
+                          rid = r.get("Id") or ""
+                          if rid.startswith("arn:"):
+                              rid = rid.split("/")[-1]   # normalize to vol-xxxx
+                          out["VolumeId"] = rid
+                          break
+                  return out
+          outputs:
+            - Name: FindingId
+              Selector: $.Payload.FindingId
+              Type: String
+            - Name: ProductArn
+              Selector: $.Payload.ProductArn
+              Type: String
+            - Name: VolumeId
+              Selector: $.Payload.VolumeId
+              Type: String
+
+        - name: CheckIfVolumeFound
+          action: aws:branch
+          inputs:
+            Choices:
+              # No volume in the finding → just resolve (clears stale/irrelevant finding)
+              - NextStep: ResolveFindings
+                Variable: "{{ ParseFindings.VolumeId }}"
+                StringEquals: ""
+            Default: DescribeVolume
+
+        - description: Describe the volume to confirm it's 'available' (unattached).
+          name: DescribeVolume
+          action: aws:executeScript
+          nextStep: CheckAvailability
+          isEnd: false
+          inputs:
+            Runtime: python3.8
+            Handler: handler
+            InputPayload:
+              VolumeId: "{{ ParseFindings.VolumeId }}"
+            Script: |
+              def handler(event, context):
+                  import boto3
+                  from botocore.exceptions import ClientError
+                  vol_id = event.get("VolumeId")
+                  ec2 = boto3.client("ec2")
+                  try:
+                      resp = ec2.describe_volumes(VolumeIds=[vol_id])
+                      vols = resp.get("Volumes", [])
+                      if not vols:
+                          return {"State": "not-found", "IsAvailable": "false"}
+                      v = vols[0]
+                      state = v.get("State", "unknown")
+                      is_avail = (state == "available" and not v.get("Attachments"))
+                      return {"State": state, "IsAvailable": "true" if is_avail else "false"}
+                  except ClientError as e:
+                      return {"State": "error", "IsAvailable": "false", "Error": str(e)}
+          outputs:
+            - Name: IsAvailable
+              Selector: $.Payload.IsAvailable
+              Type: String
+            - Name: State
+              Selector: $.Payload.State
+              Type: String
+
+        - name: CheckAvailability
+          action: aws:branch
+          inputs:
+            Choices:
+              # Not available → skip deletion, still resolve the finding
+              - NextStep: ResolveFindings
+                Variable: "{{ DescribeVolume.IsAvailable }}"
+                StringEquals: "false"
+            Default: CheckDryRun
+
+        - name: CheckDryRun
+          action: aws:branch
+          inputs:
+            Choices:
+              # String comparison for DryRun (avoids boolean substring error)
+              - NextStep: ResolveFindings
+                Variable: "{{ DryRun }}"
+                StringEquals: "true"
+            Default: DeleteVolume
+
+        - description: Delete the unattached EBS volume.
+          name: DeleteVolume
+          action: aws:executeAwsApi
+          nextStep: ResolveFindings
+          isEnd: false
+          inputs:
+            Service: ec2
+            Api: DeleteVolume
+            VolumeId: "{{ ParseFindings.VolumeId }}"
+
+        - description: Mark the related Security Hub finding as RESOLVED.
+          name: ResolveFindings
+          action: aws:executeAwsApi
+          isEnd: true
+          inputs:
+            Service: securityhub
+            Api: BatchUpdateFindings
+            FindingIdentifiers:
+              - ProductArn: "{{ ParseFindings.ProductArn }}"
+                Id: "{{ ParseFindings.FindingId }}"
+            Workflow:
+              Status: RESOLVED
+            Note:
+              UpdatedBy: OMBASR-Automation
+              Text: >-
+                EC2_VOLUME_INUSE_CHECK evaluated. Volume='{{ ParseFindings.VolumeId }}',
+                IsAvailable='{{ DescribeVolume.IsAvailable }}', DryRun='{{ DryRun }}'.
