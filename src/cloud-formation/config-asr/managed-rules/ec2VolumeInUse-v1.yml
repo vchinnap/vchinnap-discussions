@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "Managed AWS Config rule (EC2_VOLUME_INUSE_CHECK) for EBS Volumes with SSM remediation. Dynamic naming OMBASR-* pattern."
+Description: "Managed AWS Config rule (EC2_VOLUME_INUSE_CHECK) with OMBASR naming and SSM remediation using parse→branch→delete→resolve flow."
 
 Parameters:
   Team:
@@ -24,8 +24,8 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      ConfigRuleName: !Sub "OMBASR-ConfigRule-${Team}-${Service}-${Purpose}"
-      Description: !Sub "Ensure EBS volumes are attached (EC2_VOLUME_INUSE_CHECK) for ${Team}/${Purpose}."
+      ConfigRuleName: !Sub "OMBASR-Configrule-${Team}-${Service}-${Purpose}"
+      Description: !Sub "Ensure EBS volumes are attached (EC2_VOLUME_INUSE_CHECK) for ${Team}/${Service}-${Purpose}."
       Scope:
         ComplianceResourceTypes:
           - AWS::EC2::Volume
@@ -39,7 +39,7 @@ Resources:
   RemediationRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "OMBASR-RemediationRole-${Team}-${Service}-${Purpose}"
+      RoleName: !Sub "OMBASR-RoleRemediate-${Team}-${Service}-${Purpose}"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -59,13 +59,17 @@ Resources:
                 Resource: "*"
               - Effect: Allow
                 Action:
+                  - securityhub:BatchUpdateFindings
+                Resource: "*"
+              - Effect: Allow
+                Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: "*"
 
   ########################################
-  # 3) SSM Automation document
+  # 3) SSM Automation document (parse→branch→delete→resolve)
   ########################################
   DeleteUnusedVolumeDoc:
     Type: AWS::SSM::Document
@@ -76,28 +80,96 @@ Resources:
       Content:
         Fn::Sub: |
           schemaVersion: '0.3'
-          description: "Delete unattached (available) EBS volume for ${Team}/${Purpose}."
+          description: "Delete unattached (available) EBS volume for ${Team}/${Service}-${Purpose}; resolves related Security Hub finding if provided."
           assumeRole: "{{ AutomationAssumeRole }}"
           parameters:
             AutomationAssumeRole:
               type: String
-              description: "IAM role for Automation to perform EC2 actions."
+              description: "IAM role for Automation to perform EC2/SecurityHub actions."
             VolumeId:
               type: String
-              description: "Target EBS Volume ID (e.g., vol-0abc123...)."
+              default: ""
+              description: "Target EBS Volume ID (e.g., vol-0abc123...). If empty, the doc will try to parse it from FindingsJson."
+            FindingsJson:
+              type: String
+              default: ""
+              description: "Optional: JSON string of Security Hub findings array. If supplied, the doc parses volume/finding ids."
             DryRun:
               type: Boolean
               default: true
               description: "If true, do not delete; just validate."
           mainSteps:
+            # 1) Parse Security Hub finding for VolumeId / FindingId / ProductArn (if provided)
+            - name: ParseFindings
+              action: aws:executeScript
+              description: "Extract VolumeId, FindingId, ProductArn from Security Hub ASFF if FindingsJson is provided."
+              inputs:
+                Runtime: python3.11
+                Handler: handler
+                InputPayload:
+                  FindingsJson: "{{ FindingsJson }}"
+                Script: |
+                  def handler(event, context):
+                      import json
+                      fj = event.get("FindingsJson") or ""
+                      if not fj:
+                          return {"FindingId": "", "ProductArn": "", "ParsedVolumeId": ""}
+                      findings = json.loads(fj) if isinstance(fj, str) else fj
+                      if not findings:
+                          return {"FindingId": "", "ProductArn": "", "ParsedVolumeId": ""}
+                      f = findings[0]
+                      finding_id = f.get("Id") or ""
+                      product_arn = f.get("ProductArn") or ""
+                      parsed_vol = ""
+                      for r in f.get("Resources", []):
+                          # Security Hub ASFF uses "AwsEc2Volume" with Id like arn:aws:ec2:region:acct:volume/vol-123
+                          if r.get("Type") == "AwsEc2Volume":
+                              rid = r.get("Id") or ""
+                              if rid.startswith("arn:"):
+                                  rid = rid.split("/")[-1]
+                              parsed_vol = rid
+                              break
+                      return {"FindingId": finding_id, "ProductArn": product_arn, "ParsedVolumeId": parsed_vol}
+              outputs:
+                - Name: FindingId
+                  Selector: $.Payload.FindingId
+                  Type: String
+                - Name: ProductArn
+                  Selector: $.Payload.ProductArn
+                  Type: String
+                - Name: ParsedVolumeId
+                  Selector: $.Payload.ParsedVolumeId
+                  Type: String
+
+            # 2) If explicit VolumeId is missing, check if Parsing produced one; else resolve (noop)
+            - name: CheckIfVolumeFound
+              action: aws:branch
+              inputs:
+                Choices:
+                  - Variable: "{{ VolumeId }}"
+                    StringEquals: ""
+                    NextStep: CheckParsedVolume
+                Default: DeleteIfAvailable
+
+            - name: CheckParsedVolume
+              action: aws:branch
+              inputs:
+                Choices:
+                  - Variable: "{{ ParseFindings.ParsedVolumeId }}"
+                    StringEquals: ""
+                    NextStep: ResolveFindings
+                Default: DeleteIfAvailable
+
+            # 3) Delete the volume only if state == 'available'; honours DryRun
             - name: DeleteIfAvailable
               action: aws:executeScript
-              description: "Deletes the EBS volume only if it is in 'available' (unattached) state."
+              description: "Deletes the EBS volume only if it is 'available' (unattached)."
               inputs:
-                Runtime: python3.8
+                Runtime: python3.11
                 Handler: script_handler
                 InputPayload:
-                  volume_id: "{{ VolumeId }}"
+                  volume_id_param: "{{ VolumeId }}"
+                  volume_id_parsed: "{{ ParseFindings.ParsedVolumeId }}"
                   dry_run: "{{ DryRun }}"
                 Script: |
                   import boto3
@@ -106,16 +178,15 @@ Resources:
                   ec2 = boto3.client('ec2')
 
                   def script_handler(event, context):
-                      vol_id = event.get('volume_id')
-                      dry_run_flag = str(event.get('dry_run', True)).lower() in ('true', '1', 'yes')
-
+                      vol_id = (event.get('volume_id_param') or "").strip() or (event.get('volume_id_parsed') or "").strip()
                       if not vol_id:
-                          return {"changed": False, "error": "VolumeId not provided."}
+                          return {"changed": False, "message": "No VolumeId provided or parsed."}
 
+                      # Describe volume
                       try:
                           resp = ec2.describe_volumes(VolumeIds=[vol_id])
                       except ClientError as e:
-                          return {"changed": False, "error": f"DescribeVolumes failed: {e}"}
+                          return {"changed": False, "error": str(e), "message": f"Describe failed for {vol_id}."}
 
                       vols = resp.get('Volumes', [])
                       if not vols:
@@ -123,30 +194,60 @@ Resources:
 
                       v = vols[0]
                       state = v.get('State')
-                      attachments = v.get('Attachments', [])
+                      attachments = v.get('Attachments', []) or []
+                      dry_run = str(event.get('dry_run', True)).lower() in ('true','1','yes')
 
                       if state != 'available' or attachments:
-                          return {"changed": False,
-                                  "message": f"Volume {vol_id} not deleted because state={state}, attachments={len(attachments)}"}
+                          return {
+                              "changed": False,
+                              "message": f"Volume {vol_id} not deleted (state={state}, attachments={len(attachments)})."
+                          }
 
-                      if dry_run_flag:
-                          return {"changed": False,
-                                  "message": f"DryRun: Volume {vol_id} would be deleted (state=available)."}
+                      if dry_run:
+                          return {"changed": False, "message": f"DryRun: Volume {vol_id} would be deleted (state=available)."}
 
                       try:
                           ec2.delete_volume(VolumeId=vol_id)
                           return {"changed": True, "message": f"Volume {vol_id} deleted."}
                       except ClientError as e:
-                          return {"changed": False, "error": str(e)}
+                          return {"changed": False, "error": str(e), "message": f"Delete failed for {vol_id}."}
+
+            # 4) Resolve related Security Hub finding (if we parsed one)
+            - name: CheckHaveFinding
+              action: aws:branch
+              inputs:
+                Choices:
+                  - Variable: "{{ ParseFindings.FindingId }}"
+                    StringEquals: ""
+                    NextStep: Done
+                Default: ResolveFindings
+
+            - name: ResolveFindings
+              action: aws:executeAwsApi
+              isEnd: false
+              inputs:
+                Service: securityhub
+                Api: BatchUpdateFindings
+                FindingIdentifiers:
+                  - ProductArn: "{{ ParseFindings.ProductArn }}"
+                    Id: "{{ ParseFindings.FindingId }}"
+                Workflow:
+                  Status: RESOLVED
+                Note:
+                  UpdatedBy: ASR-Automation
+                  Text: "Remediated via OMBASR Automation (volume-in-use)."
+
+            - name: Done
+              action: aws:sleep
+              inputs:
+                Duration: PT1S
+              isEnd: true
 
   ########################################
   # 4) Config RemediationConfiguration
   ########################################
   VolumeInUseRemediation:
     Type: AWS::Config::RemediationConfiguration
-    DependsOn:
-      - RemediationRole
-      - DeleteUnusedVolumeDoc
     Properties:
       ConfigRuleName: !Ref VolumeInUseRule
       ResourceType: AWS::EC2::Volume
@@ -165,6 +266,9 @@ Resources:
         VolumeId:
           ResourceValue:
             Value: RESOURCE_ID
+        FindingsJson:
+          StaticValue:
+            Values: [ "" ]
         DryRun:
           StaticValue:
             Values: [ "true" ]
