@@ -136,8 +136,7 @@ Resources:
       Content:
         schemaVersion: '0.3'
         description: !Sub >
-          Parse Security Hub findings, delete unattached EBS volumes, then RESOLVE the finding
-          using the provided role [ ${AutomationAssumeRole} ].
+          Parse Security Hub findings, delete unattached EBS volumes, then RESOLVE the finding.
         assumeRole: "{{ AutomationAssumeRole }}"
         parameters:
           # Pass at runtime via StartAutomationExecution (can set default if you wish)
