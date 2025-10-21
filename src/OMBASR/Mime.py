@@ -1,16 +1,14 @@
-Yes—this will work. I’ve double-checked and tightened everything for you so you can copy-paste straight into a Python 3.11 Lambda.
-
-What you asked for, baked in:
-	•	Filter by ComplianceStatus + WorkflowStatus (+ optional RULE_PREFIX).
-	•	Dedupe to the latest per rule (by GeneratorId or per account+rule if you choose).
-	•	CSV includes full rule name (RuleName column).
-	•	CSV filename = rule name when there’s exactly one rule in the result set.
-	•	If multiple different rules are present, it falls back to RULE_PREFIX.csv (or securityhub_findings.csv if no prefix).
-	•	You can always force a specific name with CSV_FILENAME env var.
+Awesome—here’s the final, copy-paste Lambda (Python 3.11) with port 25 as the default and auto-STARTTLS on non-465 ports. It includes:
+	•	Filtering by RULE_PREFIX, COMPLIANCE_STATUSES, WORKFLOW_STATUSES, DAYS_BACK
+	•	“Latest per rule” dedupe (by GeneratorId or (Account, RuleName) via LATEST_KEY)
+	•	CSV includes RuleName (full rule name) and chooses the attachment filename intelligently
+	•	If exactly one distinct rule → RuleName.csv
+	•	Else → RULE_PREFIX.csv (or securityhub_findings.csv)
+	•	SMTP: if SMTP_TO is omitted, it sends to SMTP_FROM (your current case).
+	•	Default SMTP_PORT=25.
 
 ⸻
 
-✅ Copy-paste Lambda (Python 3.11)
 
 import os
 import json
@@ -208,7 +206,6 @@ def to_csv_bytes(findings):
     return data
 
 def sanitize_filename(name: str) -> str:
-    # keep letters, numbers, dash, underscore, dot; collapse spaces to dashes
     name = name.strip().replace(" ", "-")
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
     return name[:200] if name else "securityhub_findings"
@@ -217,7 +214,6 @@ def pick_csv_filename(findings, rule_prefix: str, override_filename: str | None)
     if override_filename:
         base = override_filename
     else:
-        # Build set of rule names in result
         names = {derive_rule_name(f) for f in findings} if findings else set()
         if len(names) == 1:
             base = list(names)[0]
@@ -231,12 +227,12 @@ def pick_csv_filename(findings, rule_prefix: str, override_filename: str | None)
     return base
 
 # -------------------- Email --------------------
-def send_email_smtp(host, port, starttls, user, password, mail_from, rcpts, subject, body_text, attachment_name, attachment_bytes):
+def send_email_smtp(host, port_str, starttls_opt, user, password, mail_from, rcpts, subject, body_text, attachment_name, attachment_bytes):
+    port = int(port_str)
     msg = MIMEMultipart()
     msg["From"] = mail_from
     msg["To"] = ", ".join(rcpts)
     msg["Subject"] = subject
-
     msg.attach(MIMEText(body_text, "plain"))
 
     part = MIMEBase("text", "csv")
@@ -247,21 +243,41 @@ def send_email_smtp(host, port, starttls, user, password, mail_from, rcpts, subj
     msg.attach(part)
 
     context = ssl.create_default_context()
-    with smtplib.SMTP(host, int(port)) as server:
-        server.ehlo()
-        if starttls:
-            server.starttls(context=context)
+
+    # Auto-detect TLS mode by port (can be overridden by SMTP_STARTTLS)
+    use_starttls = starttls_opt
+    if starttls_opt is None:  # not provided → auto
+        if port == 465:
+            use_starttls = False   # implicit SSL
+        else:
+            use_starttls = True    # opportunistic STARTTLS
+
+    if port == 465 and not use_starttls:
+        # Implicit SSL (SMTPS)
+        with smtplib.SMTP_SSL(host, port, context=context) as server:
+            if user and password:
+                server.login(user, password)
+            server.sendmail(mail_from, rcpts, msg.as_string())
+    else:
+        with smtplib.SMTP(host, port) as server:
             server.ehlo()
-        if user and password:
-            server.login(user, password)
-        server.sendmail(mail_from, rcpts, msg.as_string())
+            if use_starttls:
+                try:
+                    server.starttls(context=context)
+                    server.ehlo()
+                except smtplib.SMTPException:
+                    # Server may not support STARTTLS on port 25/587 → continue plain if needed
+                    logger.warning("STARTTLS not supported or failed; sending without TLS.")
+            if user and password:
+                server.login(user, password)
+            server.sendmail(mail_from, rcpts, msg.as_string())
 
 # -------------------- Lambda entry --------------------
 def lambda_handler(event, context):
     # Regions
     regions = getenv_list("SECURITY_HUB_REGIONS")
     if not regions:
-        regions = [os.getenv("AWS_REGION", "us-east-1")]  # you can hardcode here if you prefer
+        regions = [os.getenv("AWS_REGION", "us-east-1")]
 
     # Filters
     days_back = int(os.getenv("DAYS_BACK", "7"))
@@ -286,20 +302,26 @@ def lambda_handler(event, context):
     # CSV
     csv_bytes = to_csv_bytes(findings)
 
-    # Filename: prefer explicit CSV_FILENAME; else auto from single RuleName or prefix
+    # Filename
     csv_filename = pick_csv_filename(findings, rule_prefix, os.getenv("CSV_FILENAME"))
 
-    # SMTP config (you said you’ll paste your values)
-    smtp_host = os.getenv("SMTP_HOST")          # e.g., smtp.yourdomain.com
-    smtp_port = os.getenv("SMTP_PORT", "587")   # e.g., 587 or 465
+    # SMTP config (minimal)
+    smtp_host = os.getenv("SMTP_HOST")            # REQUIRED
+    smtp_port = os.getenv("SMTP_PORT", "25")      # default 25 per your setup
+    smtp_from = os.getenv("SMTP_FROM")            # REQUIRED
+    smtp_to   = getenv_list("SMTP_TO")
+    if not smtp_to:
+        smtp_to = [smtp_from]  # default: send to yourself if not provided
+
+    # Optional auth / TLS
     smtp_user = os.getenv("SMTP_USER", "")
     smtp_pass = os.getenv("SMTP_PASS", "")
-    smtp_from = os.getenv("SMTP_FROM")          # e.g., securityhub-reports@yourdomain.com
-    smtp_to   = getenv_list("SMTP_TO")          # comma-separated list
-    smtp_starttls = getenv_bool("SMTP_STARTTLS", True)  # false if using pure SSL port 465
+    # If SMTP_STARTTLS is unset, auto-detect by port (465 -> SSL, else attempt STARTTLS)
+    smtp_starttls_env = os.getenv("SMTP_STARTTLS")
+    smtp_starttls = None if smtp_starttls_env is None else getenv_bool("SMTP_STARTTLS", True)
 
-    if not smtp_host or not smtp_from or not smtp_to:
-        raise RuntimeError("Missing SMTP env vars: SMTP_HOST, SMTP_FROM, SMTP_TO are required.")
+    if not smtp_host or not smtp_from:
+        raise RuntimeError("Missing SMTP env vars: SMTP_HOST and SMTP_FROM are required.")
 
     subject = os.getenv("EMAIL_SUBJECT", f"Security Hub findings report ({len(findings)} rows)")
     body    = os.getenv("EMAIL_BODY", "Attached is the latest Security Hub findings CSV.")
@@ -324,30 +346,19 @@ def lambda_handler(event, context):
 
 ⸻
 
-How to set it exactly like you said
-	•	Paste your SMTP server, port, from address as env vars:
-	•	SMTP_HOST, SMTP_PORT, SMTP_FROM, SMTP_USER/SMTP_PASS (if needed), SMTP_TO (comma-separated)
-	•	Region: either let it use the Lambda’s region automatically, or set:
-	•	SECURITY_HUB_REGIONS=ca-central-1 (or whichever you want)
-	•	Filters you mentioned (examples):
-	•	RULE_PREFIX=BMOASR-HCOPS
-	•	WORKFLOW_STATUSES=RESOLVED
-	•	COMPLIANCE_STATUSES=FAILED,PASSED
-	•	DAYS_BACK=30
-	•	Latest per rule (default ON). If you need per-account-per-rule:
-	•	LATEST_KEY=ACCOUNT_RULE
+Minimum env vars for your current setup
 
-CSV filename = rule name
-	•	If the result set contains exactly one distinct RuleName, the attachment is <RuleName>.csv (e.g., BMOASR-HCOPS-IMDS-v2-Enforced.csv).
-	•	If multiple different rules are present, it falls back to:
-	•	RULE_PREFIX.csv (e.g., BMOASR-HCOPS.csv), or securityhub_findings.csv if no prefix.
-	•	To force a specific name regardless, set CSV_FILENAME=MyReport.csv.
+SMTP_HOST=your.smtp.server
+SMTP_PORT=25
+SMTP_FROM=securityhub-reports@yourdomain.com
 
-⸻
+# Optional (can add later)
+# SMTP_TO=ops@yourdomain.com
+# RULE_PREFIX=BMOASR-HCOPS
+# COMPLIANCE_STATUSES=FAILED,PASSED
+# WORKFLOW_STATUSES=RESOLVED
+# DAYS_BACK=30
+# LATEST_PER_RULE=true
+# LATEST_KEY=ACCOUNT_RULE
 
-Quick test checklist (1–2 minutes)
-	1.	In Lambda console → Test with an empty event {} after setting env vars.
-	2.	Check CloudWatch Logs: you should see “Collected findings: N” and the filename chosen.
-	3.	Verify the email arrives with the expected CSV filename and RuleName column present.
-
-If you want me to lock filename strictly to the first rule’s name even when multiple rules are present, say the word and I’ll tweak pick_csv_filename() accordingly.
+If you want me to hard-lock STARTTLS off/on explicitly for your mail relay, tell me which behavior you want and I’ll set it in the code (or via SMTP_STARTTLS).
