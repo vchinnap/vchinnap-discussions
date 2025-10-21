@@ -6,31 +6,43 @@ import smtplib
 import ssl
 import logging
 import re
+import socket
 from datetime import datetime, timezone, timedelta
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email import encoders
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError, ConnectTimeoutError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# ---------- Global timeouts ----------
+DEFAULT_CONNECT_TIMEOUT = int(os.getenv("CONNECT_TIMEOUT_SECONDS", "5"))
+DEFAULT_READ_TIMEOUT    = int(os.getenv("READ_TIMEOUT_SECONDS", "20"))
+SMTP_SOCKET_TIMEOUT     = float(os.getenv("SMTP_SOCKET_TIMEOUT", "8"))
+socket.setdefaulttimeout(SMTP_SOCKET_TIMEOUT)
+
 # -------------------- Env helpers --------------------
 def getenv_bool(key: str, default: bool = True) -> bool:
-    val = os.getenv(key)
-    if val is None:
+    v = os.getenv(key)
+    if v is None:
         return default
-    return val.strip().lower() in ["1", "true", "yes", "y"]
+    return v.strip().lower() in ("1","true","yes","y")
 
 def getenv_list(key: str):
     v = os.getenv(key, "")
     if not v.strip():
         return []
     return [x.strip() for x in v.split(",") if x.strip()]
+
+def getenv_int(key: str, default: int) -> int:
+    try: return int(os.getenv(key, str(default)))
+    except Exception: return default
 
 # -------------------- Filters --------------------
 def make_time_filter(days_back: int):
@@ -49,40 +61,17 @@ def make_optional_filters(rule_prefix, compliance_statuses, workflow_statuses):
     return f
 
 def merge_filters(base_filters, extra_filters):
-    if not extra_filters:
-        return base_filters or {}
-    if not base_filters:
-        return extra_filters
+    if not extra_filters:  return base_filters or {}
+    if not base_filters:   return extra_filters
     merged = dict(base_filters)
-    for key, val in extra_filters.items():
-        if key in merged and isinstance(merged[key], list) and isinstance(val, list):
-            merged[key] = merged[key] + val  # AND within same key
+    for k, v in extra_filters.items():
+        if k in merged and isinstance(merged[k], list) and isinstance(v, list):
+            merged[k] = merged[k] + v
         else:
-            merged[key] = val
+            merged[k] = v
     return merged
 
-# -------------------- Query --------------------
-def collect_findings(regions, filters):
-    findings = []
-    for region in regions:
-        logger.info("Querying Security Hub in %s", region)
-        sh = boto3.client(
-            "securityhub",
-            region_name=region,
-            config=Config(retries={"max_attempts": 10, "mode": "standard"})
-        )
-        try:
-            paginator = sh.get_paginator("get_findings")
-            for page in paginator.paginate(Filters=filters, PaginationConfig={"PageSize": 100}):
-                for f in page.get("Findings", []):
-                    f["_Region"] = region
-                    findings.append(f)
-        except ClientError as e:
-            logger.error("Region %s error: %s", region, e, exc_info=True)
-    logger.info("Collected findings: %d", len(findings))
-    return findings
-
-# -------------------- Processing --------------------
+# -------------------- Finding helpers --------------------
 def parse_dt(s):
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -94,14 +83,12 @@ def derive_rule_name(f: dict) -> str:
     udf = f.get("UserDefinedFields") or {}
     if isinstance(udf, dict):
         rn = udf.get("RuleName")
-        if rn:
-            return str(rn)
+        if rn: return str(rn)
     pf = f.get("ProductFields") or {}
     if isinstance(pf, dict):
         rn = pf.get("RuleName") or pf.get("ruleName")
-        if rn:
-            return str(rn)
-    # Parse from GeneratorId when it is a Config rule ARN
+        if rn: return str(rn)
+    # Derive from GeneratorId
     gen = f.get("GeneratorId", "") or ""
     if "/config-rule/" in gen:
         return gen.split("/config-rule/")[-1]
@@ -132,11 +119,57 @@ def dedupe_latest(findings, key_mode: str = "GENERATOR_ID"):
                 latest[key] = f
     return list(latest.values())
 
-def json_safe(x):
+# -------------------- Security Hub query (concurrent & capped) --------------------
+def _collect_region_findings(region: str, filters, page_size: int, max_pages: int, max_findings: int):
+    out = []
+    sh = boto3.client(
+        "securityhub",
+        region_name=region,
+        config=Config(
+            retries={"max_attempts": 10, "mode": "standard"},
+            connect_timeout=DEFAULT_CONNECT_TIMEOUT,
+            read_timeout=DEFAULT_READ_TIMEOUT,
+        ),
+    )
     try:
-        return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
-    except Exception:
-        return str(x)
+        paginator = sh.get_paginator("get_findings")
+        page_count = 0
+        for page in paginator.paginate(Filters=filters, PaginationConfig={"PageSize": page_size}):
+            page_count += 1
+            for f in page.get("Findings", []):
+                f["_Region"] = region
+                out.append(f)
+                if max_findings and len(out) >= max_findings:
+                    return out
+            if max_pages and page_count >= max_pages:
+                break
+    except (ClientError, EndpointConnectionError, ReadTimeoutError, ConnectTimeoutError) as e:
+        logger.error("Region %s query error: %s", region, e, exc_info=True)
+    return out
+
+def collect_findings(regions, filters):
+    page_size    = getenv_int("PAGE_SIZE", 100)    # up to 100
+    max_pages    = getenv_int("MAX_PAGES", 0)      # 0 = no cap
+    max_findings = getenv_int("MAX_FINDINGS", 0)   # 0 = no cap
+    max_workers  = getenv_int("MAX_REGION_WORKERS", min(4, len(regions) or 1))
+
+    allf = []
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        futs = {exe.submit(_collect_region_findings, r, filters, page_size, max_pages, max_findings): r for r in regions}
+        for fut in as_completed(futs):
+            r = futs[fut]
+            try:
+                res = fut.result()
+                allf.extend(res)
+            except Exception as e:
+                logger.error("Region %s worker failed: %s", r, e, exc_info=True)
+    logger.info("Collected findings total: %d", len(allf))
+    return allf
+
+# -------------------- CSV --------------------
+def json_safe(x):
+    try: return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
+    except Exception: return str(x)
 
 def to_csv_bytes(findings):
     columns = [
@@ -165,31 +198,24 @@ def to_csv_bytes(findings):
         row = []
         for col in columns:
             if col == "RuleName":
-                row.append(derive_rule_name(f))
-                continue
+                row.append(derive_rule_name(f)); continue
             if col in ["Types","Vulnerabilities","Resources","Compliance.RelatedRequirements"]:
-                val = get_path(f, col, f.get(col, []))
-                row.append(json_safe(val))
-            elif col in ["ProductFields","UserDefinedFields","Remediation.Recommendation","FindingProviderFields","Note"]:
-                val = get_path(f, col, {})
-                row.append(json_safe(val))
-            elif col == "Severity.Label":
-                row.append(f.get("Severity", {}).get("Label", ""))
-            elif col == "Severity.Original":
-                row.append(f.get("Severity", {}).get("Original", ""))
-            elif col == "Compliance.Status":
-                row.append(f.get("Compliance", {}).get("Status", ""))
-            elif col == "Workflow.Status":
-                row.append(f.get("Workflow", {}).get("Status", ""))
-            else:
-                val = get_path(f, col, f.get(col, ""))
-                if isinstance(val, (dict, list)):
-                    row.append(json_safe(val))
-                else:
-                    row.append(val)
+                val = get_path(f, col, f.get(col, [])); row.append(json_safe(val)); continue
+            if col in ["ProductFields","UserDefinedFields","Remediation.Recommendation","FindingProviderFields","Note"]:
+                val = get_path(f, col, {}); row.append(json_safe(val)); continue
+            if col == "Severity.Label":
+                row.append(f.get("Severity", {}).get("Label", "")); continue
+            if col == "Severity.Original":
+                row.append(f.get("Severity", {}).get("Original", "")); continue
+            if col == "Compliance.Status":
+                row.append(f.get("Compliance", {}).get("Status", "")); continue
+            if col == "Workflow.Status":
+                row.append(f.get("Workflow", {}).get("Status", "")); continue
+            val = get_path(f, col, f.get(col, ""))
+            row.append(json_safe(val) if isinstance(val, (dict, list)) else val)
         w.writerow(row)
 
-    data = out.getvalue().encode("utf-8-sig")  # UTF-8 BOM for Excel
+    data = out.getvalue().encode("utf-8-sig")  # Excel-friendly UTF-8
     out.close()
     return data
 
@@ -198,67 +224,97 @@ def sanitize_filename(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
     return name[:200] if name else "securityhub_findings"
 
-def pick_csv_filename(findings, rule_prefix: str, override_filename: str | None) -> str:
-    if override_filename:
-        base = override_filename
+# If *one* rule: name the CSV after the rule; else mirror your screenshot style: hcops-<servicename>-orr.csv
+def choose_attachment_name(findings, servicename: str, rule_prefix: str, override: str | None) -> str:
+    if override:
+        base = override
     else:
         names = {derive_rule_name(f) for f in findings} if findings else set()
         if len(names) == 1:
-            base = list(names)[0]
-        elif rule_prefix:
-            base = rule_prefix
+            base = list(names)[0]  # single rule → exact name
         else:
-            base = "securityhub_findings"
+            base = f"hcops-{servicename}-orr" if servicename else (rule_prefix or "securityhub_findings")
     base = sanitize_filename(base)
-    if not base.lower().endswith(".csv"):
-        base += ".csv"
-    return base
+    return base + ("" if base.lower().endswith(".csv") else ".csv")
 
-# -------------------- Email --------------------
-def send_email_smtp(host, port_str, starttls_opt, user, password, mail_from, rcpts, subject, body_text, attachment_name, attachment_bytes):
-    port = int(port_str)
+# -------------------- Email (screenshot style) --------------------
+SMTP_HOST     = os.getenv("SMTP_HOST", "smtp-aws.loud.mogc.net")
+SMTP_PORT     = int(os.getenv("SMTP_PORT", "25"))
+FROM_ADDRESS  = os.getenv("SMTP_FROM", "dummy@omb.com")
+DEFAULT_TO    = os.getenv("SMTP_TO", FROM_ADDRESS)
+SMTP_USER     = os.getenv("SMTP_USER", "")
+SMTP_PASS     = os.getenv("SMTP_PASS", "")
+SMTP_STARTTLS = (os.getenv("SMTP_STARTTLS", "").strip().lower() in ("1","true","yes"))
+
+def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, servicename: str, subject_hint: str = ""):
+    """
+    Matches your function signature/style.
+    Sends HTML body + CSV attachment. Port 25, NO STARTTLS by default.
+    """
+    to_address = to_address or DEFAULT_TO
+    region_name = os.getenv("AWS_REGION", "ca-central-1")
+    servicename_u = (servicename or "report").upper()
+    emailsubject = subject_hint or f"{servicename_u} ORR Reporting data for MOR Sandbox {region_name}"
+
+    # Build HTML body similar to your screenshot
+    body_html = []
+    body_html.append(f"<b><u>{emailsubject}</u></b><br>")
+    body_html.append(f"<p>{emailbody}</p>")
+    body_html.append("<br><b>Regards,</b><br>BMO Cloud Operation")
+    html_part = MIMEText("".join(body_html), "html")
+
     msg = MIMEMultipart()
-    msg["From"] = mail_from
-    msg["To"] = ", ".join(rcpts)
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body_text, "plain"))
+    msg["From"] = FROM_ADDRESS
+    msg["To"] = to_address
+    msg["Subject"] = emailsubject
+    cc_addr = os.getenv("SMTP_CC", "").strip()
+    if cc_addr:
+        msg["Cc"] = cc_addr
+    msg.attach(html_part)
 
-    part = MIMEBase("text", "csv")
-    part.set_payload(attachment_bytes)
-    encoders.encode_base64(part)
-    part.add_header("Content-Disposition", f'attachment; filename="{attachment_name}"')
-    part.add_header("Content-Transfer-Encoding", "base64")
-    msg.attach(part)
+    # Attach CSV
+    try:
+        with open(file_path, "rb") as fh:
+            part = MIMEBase("text", "csv")
+            part.set_payload(fh.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{os.path.basename(file_path)}"')
+        part.add_header("Content-Transfer-Encoding", "base64")
+        msg.attach(part)
+        print(f"[DEBUG] Attachment added: {file_path}")
+    except FileNotFoundError:
+        print(f"[ERROR] CSV file not found: {file_path}")
+        return 1
 
-    context = ssl.create_default_context()
+    # Recipients (To + Cc)
+    rcpts = [e.strip() for e in (to_address + ("," + cc_addr if cc_addr else "")).split(",") if e.strip()]
 
-    # Auto-detect TLS mode by port (can be overridden by SMTP_STARTTLS)
-    use_starttls = starttls_opt
-    if starttls_opt is None:  # not provided → auto
-        if port == 465:
-            use_starttls = False   # implicit SSL
+    # Send over port 25 with short timeout and no STARTTLS by default
+    socket.setdefaulttimeout(SMTP_SOCKET_TIMEOUT)
+    print(f"[DEBUG] SMTP connect {SMTP_HOST}:{SMTP_PORT} starttls={SMTP_STARTTLS} timeout={SMTP_SOCKET_TIMEOUT}s")
+
+    try:
+        if SMTP_PORT == 465 and not SMTP_STARTTLS:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_SOCKET_TIMEOUT) as server:
+                if SMTP_USER and SMTP_PASS: server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(FROM_ADDRESS, rcpts, msg.as_string())
         else:
-            use_starttls = True    # opportunistic STARTTLS
-
-    if port == 465 and not use_starttls:
-        # Implicit SSL (SMTPS)
-        with smtplib.SMTP_SSL(host, port, context=context) as server:
-            if user and password:
-                server.login(user, password)
-            server.sendmail(mail_from, rcpts, msg.as_string())
-    else:
-        with smtplib.SMTP(host, port) as server:
-            server.ehlo()
-            if use_starttls:
-                try:
-                    server.starttls(context=context)
-                    server.ehlo()
-                except smtplib.SMTPException:
-                    # Server may not support STARTTLS on port 25/587 → continue plain if needed
-                    logger.warning("STARTTLS not supported or failed; sending without TLS.")
-            if user and password:
-                server.login(user, password)
-            server.sendmail(mail_from, rcpts, msg.as_string())
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_SOCKET_TIMEOUT) as server:
+                server.ehlo()
+                if SMTP_STARTTLS:
+                    try:
+                        server.starttls(); server.ehlo()
+                    except smtplib.SMTPException:
+                        print("[WARN] STARTTLS failed or not supported; continuing without TLS.")
+                if SMTP_USER and SMTP_PASS: server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(FROM_ADDRESS, rcpts, msg.as_string())
+        print(f"[INFO] Email sent to {', '.join(rcpts)}")
+        return 0
+    except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, smtplib.SMTPTimeoutError, OSError) as e:
+        print(f"[ERROR] SMTP send failed {SMTP_HOST}:{SMTP_PORT} -> {e}")
+        print("Hint: If on AWS, outbound :25 may be blocked. Consider 587 with SMTP_STARTTLS=true, "
+              "or request AWS to remove the block, or route via an in-VPC relay.")
+        return 1
 
 # -------------------- Lambda entry --------------------
 def lambda_handler(event, context):
@@ -268,65 +324,57 @@ def lambda_handler(event, context):
         regions = [os.getenv("AWS_REGION", "us-east-1")]
 
     # Filters
-    days_back = int(os.getenv("DAYS_BACK", "7"))
+    days_back = getenv_int("DAYS_BACK", 7)
     base = make_time_filter(days_back)
 
-    rule_prefix = os.getenv("RULE_PREFIX", "").strip()
-    compliance_statuses = getenv_list("COMPLIANCE_STATUSES")  # e.g., FAILED,PASSED
-    workflow_statuses  = getenv_list("WORKFLOW_STATUSES")     # e.g., NEW,NOTIFIED,RESOLVED
+    rule_prefix        = os.getenv("RULE_PREFIX", "").strip()
+    compliance_statuses= getenv_list("COMPLIANCE_STATUSES")
+    workflow_statuses  = getenv_list("WORKFLOW_STATUSES")
     extras = make_optional_filters(rule_prefix, compliance_statuses, workflow_statuses)
     filters = merge_filters(base, extras)
+    logger.info("Effective filters: %s", json.dumps(filters))
 
     # Query
     findings = collect_findings(regions, filters)
 
-    # Dedupe latest per rule (default ON)
+    # Dedupe (latest per rule)
     if getenv_bool("LATEST_PER_RULE", True):
         key_mode = os.getenv("LATEST_KEY", "GENERATOR_ID").strip().upper()
         if key_mode not in ("GENERATOR_ID", "ACCOUNT_RULE"):
             key_mode = "GENERATOR_ID"
         findings = dedupe_latest(findings, key_mode)
 
-    # CSV
+    # CSV bytes
     csv_bytes = to_csv_bytes(findings)
 
-    # Filename
-    csv_filename = pick_csv_filename(findings, rule_prefix, os.getenv("CSV_FILENAME"))
+    # Decide attachment name:
+    servicename = os.getenv("SERVICE_NAME", "ec2")  # used in subject + fallback filename
+    csv_filename = choose_attachment_name(findings, servicename, rule_prefix, os.getenv("CSV_FILENAME"))
+    csv_path = f"/tmp/{csv_filename}"
+    with open(csv_path, "wb") as fh:
+        fh.write(csv_bytes)
+    print(f"[DEBUG] CSV written: {csv_path} ({len(csv_bytes)} bytes) rows={len(findings)}")
 
-    # SMTP config (minimal)
-    smtp_host = os.getenv("SMTP_HOST")            # REQUIRED
-    smtp_port = os.getenv("SMTP_PORT", "25")      # default 25 per your setup
-    smtp_from = os.getenv("SMTP_FROM")            # REQUIRED
-    smtp_to   = getenv_list("SMTP_TO")
-    if not smtp_to:
-        smtp_to = [smtp_from]  # default: send to yourself if not provided
+    # Email body text (you can change)
+    email_body = os.getenv("EMAIL_BODY", "Result of ORR… (auto-generated Security Hub findings report).")
 
-    # Optional auth / TLS
-    smtp_user = os.getenv("SMTP_USER", "")
-    smtp_pass = os.getenv("SMTP_PASS", "")
-    # If SMTP_STARTTLS is unset, auto-detect by port (465 -> SSL, else attempt STARTTLS)
-    smtp_starttls_env = os.getenv("SMTP_STARTTLS")
-    smtp_starttls = None if smtp_starttls_env is None else getenv_bool("SMTP_STARTTLS", True)
-
-    if not smtp_host or not smtp_from:
-        raise RuntimeError("Missing SMTP env vars: SMTP_HOST and SMTP_FROM are required.")
-
-    subject = os.getenv("EMAIL_SUBJECT", f"Security Hub findings report ({len(findings)} rows)")
-    body    = os.getenv("EMAIL_BODY", "Attached is the latest Security Hub findings CSV.")
-
-    # Send
-    send_email_smtp(
-        smtp_host, smtp_port, smtp_starttls, smtp_user, smtp_pass,
-        smtp_from, smtp_to, subject, body, csv_filename, csv_bytes
+    # Send (like your screenshot call)
+    rc = send_email_with_attachment(
+        to_address=os.getenv("SMTP_TO", ""),     # if empty, it sends to FROM
+        file_path=csv_path,
+        emailbody=email_body,
+        servicename=servicename,
+        subject_hint=os.getenv("EMAIL_SUBJECT", "")  # optional override
     )
+    if rc != 0:
+        raise RuntimeError("Email send failed")
 
     return {
         "statusCode": 200,
         "body": json.dumps({
             "regions": regions,
             "rows": len(findings),
-            "filename": csv_filename,
-            "subject": subject,
-            "sent_to": smtp_to
+            "filename": os.path.basename(csv_path),
+            "sent_to": os.getenv("SMTP_TO", DEFAULT_TO)
         })
     }
