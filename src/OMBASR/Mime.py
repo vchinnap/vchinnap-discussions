@@ -1,15 +1,3 @@
-Awesome—here’s the final, copy-paste Lambda (Python 3.11) with port 25 as the default and auto-STARTTLS on non-465 ports. It includes:
-	•	Filtering by RULE_PREFIX, COMPLIANCE_STATUSES, WORKFLOW_STATUSES, DAYS_BACK
-	•	“Latest per rule” dedupe (by GeneratorId or (Account, RuleName) via LATEST_KEY)
-	•	CSV includes RuleName (full rule name) and chooses the attachment filename intelligently
-	•	If exactly one distinct rule → RuleName.csv
-	•	Else → RULE_PREFIX.csv (or securityhub_findings.csv)
-	•	SMTP: if SMTP_TO is omitted, it sends to SMTP_FROM (your current case).
-	•	Default SMTP_PORT=25.
-
-⸻
-
-
 import os
 import json
 import csv
@@ -342,23 +330,3 @@ def lambda_handler(event, context):
             "sent_to": smtp_to
         })
     }
-
-
-⸻
-
-Minimum env vars for your current setup
-
-SMTP_HOST=your.smtp.server
-SMTP_PORT=25
-SMTP_FROM=securityhub-reports@yourdomain.com
-
-# Optional (can add later)
-# SMTP_TO=ops@yourdomain.com
-# RULE_PREFIX=BMOASR-HCOPS
-# COMPLIANCE_STATUSES=FAILED,PASSED
-# WORKFLOW_STATUSES=RESOLVED
-# DAYS_BACK=30
-# LATEST_PER_RULE=true
-# LATEST_KEY=ACCOUNT_RULE
-
-If you want me to hard-lock STARTTLS off/on explicitly for your mail relay, tell me which behavior you want and I’ll set it in the code (or via SMTP_STARTTLS).
