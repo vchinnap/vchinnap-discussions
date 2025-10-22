@@ -452,14 +452,10 @@ def to_csv_bytes(findings):
                 row.append(res.get(field, "")); continue
 
             # Tag columns (tolerant lookups, keep original header case)
+               # Tag columns (case-insensitive lookups)
             if col.startswith("Tag."):
-                key = col.split(".",1)[1]
-                if key in ["Support-Team","AppCatID","Author", "Stage", "Environment"]:
-                    v = res_tags.get(key, "")
-                else:
-                v = ""
-                row.append(v) 
-                continue
+                key_wanted = col.split(".",1)[1].lower()  # appcatid, supportteam, author
+                row.append(res_tags.get(key_wanted, "")); continue
 
             # JSON-heavy
             if col in ["Types","Vulnerabilities","Compliance.RelatedRequirements"]:
