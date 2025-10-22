@@ -49,8 +49,8 @@ def getenv_int(key: str, default: int) -> int:
 # -------------------- Filters --------------------
 def make_time_filter(days_back: int):
     now = datetime.now(timezone.utc)
-    since = (now - timedelta(days=days_back)).isoformat()
-    return {"UpdatedAt": [{"DateRange": {"Start": since, "End": now.isoformat()}}]}
+    '''since = (now - timedelta(days=days_back)).isoformat()'''
+    return {"UpdatedAt": [{"DateRange": {"Value": days_back, "Unit": "DAYS"}}]}
 
 def make_optional_filters(rule_title_prefix, rule_prefix, compliance_statuses, workflow_statuses):
     """
@@ -323,7 +323,7 @@ def sanitize_filename(name: str) -> str:
 def choose_attachment_name(findings, servicename: str, rule_prefix_used: str, override: str | None) -> str:
     """
     If one rule in results -> that rule name.
-    Else -> hcops-<servicename>-orr.csv or rule_prefix fallback.
+    Else -> BMOASR-ConfigRule-HCOPS-<servicename>-security_findings.csv or rule_prefix fallback.
     """
     if override:
         base = override
@@ -332,7 +332,7 @@ def choose_attachment_name(findings, servicename: str, rule_prefix_used: str, ov
         if len(names) == 1:
             base = list(names)[0]
         else:
-            base = f"hcops-{servicename}-orr" if servicename else (rule_prefix_used or "securityhub_findings")
+            base = f"BMOASR-ConfigRule-HCOPS-{servicename}-security_findings" if servicename else (rule_prefix_used or "securityhub_findings")
     base = sanitize_filename(base)
     return base + ("" if base.lower().endswith(".csv") else ".csv")
 
@@ -347,14 +347,14 @@ SMTP_STARTTLS = (os.getenv("SMTP_STARTTLS", "").strip().lower() in ("1","true","
 
 def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, servicename: str, subject_hint: str = ""):
     to_address = to_address or DEFAULT_TO
-    region_name = os.getenv("AWS_REGION", "ca-central-1")
+    region_name = os.getenv("AWS_REGION")
     servicename_u = (servicename or "report").upper()
-    emailsubject = subject_hint or f"{servicename_u} ORR Reporting data for MOR Sandbox {region_name}"
+    emailsubject = subject_hint or f"{servicename_u} security_findings report"
 
     body_html = []
     body_html.append(f"<b><u>{emailsubject}</u></b><br>")
     body_html.append(f"<p>{emailbody}</p>")
-    body_html.append("<br><b>Regards,</b><br>BMO Cloud Operation")
+    body_html.append("<br><b>Regards,</b><br>BMO Cloud Operations")
     html_part = MIMEText("".join(body_html), "html")
 
     msg = MIMEMultipart()
@@ -441,7 +441,7 @@ def lambda_handler(event, context):
     csv_bytes = to_csv_bytes(findings)
 
     # Attachment name
-    servicename   = os.getenv("SERVICE_NAME", "ec2")
+    servicename   = os.getenv("SERVICE_NAME")
     rule_prefix_used = rule_title_prefix or rule_prefix
     csv_filename = choose_attachment_name(findings, servicename, rule_prefix_used, os.getenv("CSV_FILENAME"))
     csv_path = f"/tmp/{csv_filename}"
@@ -450,7 +450,7 @@ def lambda_handler(event, context):
     print(f"[DEBUG] CSV written: {csv_path} ({len(csv_bytes)} bytes) rows={len(findings)}")
 
     # Email body
-    email_body = os.getenv("EMAIL_BODY", "Result of ORR… (auto-generated Security Hub findings report).")
+    email_body = os.getenv("EMAIL_BODY", "Result of BMOASR ConfigRule(auto-generated Security Hub findings report).")
 
     # Send
     rc = send_email_with_attachment(
