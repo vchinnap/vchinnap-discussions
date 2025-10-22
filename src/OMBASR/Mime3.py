@@ -448,15 +448,13 @@ def to_csv_bytes(findings):
 
             # Tag columns (tolerant lookups, keep original header case)
             if col.startswith("Tag."):
-                key_orig = col.split(".",1)[1]
-                aliases = []
-                norm = re.sub(r"[^a-z0-9]+", "", key_orig.lower())
-                if norm == "supportteam":
-                    aliases = ["SupportTeam","support-team","support_team"]
-                elif norm == "appcatid":
-                    aliases = ["AppCatID","AppCatId","appcatid"]
-                v = _get_tag_any(res_tags, key_orig, extra_aliases=aliases, default="")
-                row.append(v); continue
+                key = col.split(".",1)[1]
+                if key in ["Support-Team","AppCatID","Author", "Stage", "Environment"]:
+                    v = res_tags.get(key, "")
+                else:
+                v = ""
+                row.append(v) 
+                continue
 
             # JSON-heavy
             if col in ["Types","Vulnerabilities","Compliance.RelatedRequirements"]:
