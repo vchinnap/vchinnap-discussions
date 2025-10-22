@@ -67,6 +67,9 @@ def make_optional_filters(rule_title_prefix, rule_prefix, compliance_statuses, w
         f["ComplianceStatus"] = [{"Value": s, "Comparison": "EQUALS"} for s in compliance_statuses]
     if workflow_statuses:
         f["WorkflowStatus"] = [{"Value": s, "Comparison": "EQUALS"} for s in workflow_statuses]
+    record_state = os.getenv("RECORD_STATE", "ACTIVE").strip().upper()
+    if record_state:
+        f["RecordState"] = [{"Value": record_state, "Comparison": "EQUALS"}]
     return f
 
 def merge_filters(base_filters, extra_filters):
