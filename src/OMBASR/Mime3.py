@@ -631,7 +631,8 @@ def lambda_handler(event, context):
         regions = [os.getenv("AWS_REGION", "us-east-1")]
 
     # Filters (env-driven to keep your “old form”)
-    days_back = getenv_int("DAYS_BACK", 7)
+    #days_back = getenv_int("DAYS_BACK", 7)
+    days_back = int(event.get("days_back", os.getenv("DAYS_BACK", 7)))
     base = make_time_filter(days_back)
 
     rule_title_prefix   = os.getenv("RULE_TITLE_PREFIX", "BMOASR-ConfigRule-HCOPS-").strip()
