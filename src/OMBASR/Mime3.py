@@ -11,7 +11,7 @@ import random
 from datetime import datetime, timezone, timedelta
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from email.mime_text import MIMEText
 from email import encoders
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -240,40 +240,19 @@ def _get(d: dict, dotted: str, default=""):
             return default
     return cur
 
-# ---------- Normalizers for tolerant tag lookup ----------
-def _normalize_key(s: str) -> str:
-    if not isinstance(s, str):
+# ---------- AccountId display: force full digits in Excel/Sheets ----------
+def _excel_safe_account(x) -> str:
+    """
+    Return an Account ID formatted to avoid scientific notation in Excel/Sheets.
+    - If numeric-looking: returns => ="123456789012" (displays full number)
+    - Else: returns as-is string
+    """
+    s = str(x or "").strip()
+    if not s:
         return ""
-    return re.sub(r"[^a-z0-9]+", "", s.strip().lower())
-
-def _get_tag_any(tags_map: dict, wanted_key: str, extra_aliases=None, default=""):
-    """
-    Tolerant tag match: direct lower, normalized, and optional aliases.
-    """
-    if not isinstance(tags_map, dict):
-        return default
-
-    # direct lower lookup
-    v = tags_map.get((wanted_key or "").lower())
-    if v not in (None, ""):
-        return v
-
-    # normalized lookup
-    normed = {_normalize_key(k): v for k, v in tags_map.items()}
-    v = normed.get(_normalize_key(wanted_key))
-    if v not in (None, ""):
-        return v
-
-    # alias lookup
-    if extra_aliases:
-        for a in extra_aliases:
-            v = tags_map.get((a or "").lower())
-            if v not in (None, ""):
-                return v
-            v = normed.get(_normalize_key(a))
-            if v not in (None, ""):
-                return v
-    return default
+    if s.isdigit():
+        return f'="{s}"'
+    return s
 
 def _account_id_from_resource(res: dict, finding: dict) -> str:
     """
@@ -378,30 +357,6 @@ def summary_to_html(counts, workflows, compliances) -> str:
     html.append('</table></div>')
     return "".join(html)
 
-def summary_to_rows(counts, workflows, compliances):
-    """Plain-text matrix (fallback)."""
-    w_name = max(12, max((len(w) for w in workflows), default=0))
-    c_widths = {c: max(7, len(c)) for c in compliances}
-    head = "Workflow".ljust(w_name) + " | " + " | ".join(c.ljust(c_widths[c]) for c in compliances) + " | TOTAL"
-    sep = "-" * len(head)
-    lines = [head, sep]
-    for w in workflows:
-        row_vals = []
-        total = 0
-        for c in compliances:
-            v = counts.get((w, c), 0)
-            total += v
-            row_vals.append(str(v).ljust(c_widths[c]))
-        lines.append(w.ljust(w_name) + " | " + " | ".join(row_vals) + f" | {total}")
-    col_tot = []
-    gtot = 0
-    for c in compliances:
-        col = sum(counts.get((w, c), 0) for w in workflows)
-        gtot += col
-        col_tot.append(str(col).ljust(c_widths[c]))
-    lines += [sep, "TOTAL".ljust(w_name) + " | " + " | ".join(col_tot) + f" | {gtot}"]
-    return lines
-
 def summary_explanations_html(counts, workflows, compliances) -> str:
     """
     Short bullets like: NEW × PASSED — 5 unique resources.
@@ -410,7 +365,6 @@ def summary_explanations_html(counts, workflows, compliances) -> str:
     if not counts:
         return ""
 
-    # Optional human hint texts (kept neutral)
     wf_hint = {
         "NEW": "newly created or reopened",
         "NOTIFIED": "owners have been notified",
@@ -441,10 +395,8 @@ def summary_explanations_html(counts, workflows, compliances) -> str:
 
     return '<ul style="margin:10px 0 0 18px; padding:0; color:#334155; font-size:13px">' + "".join(items) + "</ul>"
 
-# -------------------- CSV (same order; +Resource.AccountId added) --------------------
+# -------------------- CSV (same order; AccountIds forced to full digits) --------------------
 def to_csv_bytes(findings):
-    # Tag keys of interest (case-insensitive). Default to requested three.
-    # We keep the same three fixed headers you showed earlier.
     columns = [
         # NOTE: _Region intentionally NOT exported
         "AwsAccountId","Id","GeneratorId","RuleName","Title","Description",
@@ -473,6 +425,10 @@ def to_csv_bytes(findings):
             if col == "RuleName":
                 row.append(derive_rule_name(f)); continue
 
+            # Force full digits for AwsAccountId at the CSV-level
+            if col == "AwsAccountId":
+                row.append(_excel_safe_account(f.get("AwsAccountId", ""))); continue
+
             # Convenience flattening
             if col == "Severity.Label":
                 row.append(f.get("Severity", {}).get("Label", "")); continue
@@ -487,14 +443,14 @@ def to_csv_bytes(findings):
             if col.startswith("Resource."):
                 field = col.split(".",1)[1]
                 if field == "AccountId":
-                    row.append(_account_id_from_resource(res, f)); continue
+                    row.append(_excel_safe_account(_account_id_from_resource(res, f))); continue
                 row.append(res.get(field, "")); continue
 
-            # Tag columns (tolerant lookups)
+            # Tag columns (tolerant lookups, keep original header case)
             if col.startswith("Tag."):
-                key_orig = col.split(".",1)[1]   # e.g., appcatID, supportTeam, Author (header case preserved)
+                key_orig = col.split(".",1)[1]
                 aliases = []
-                norm = _normalize_key(key_orig)
+                norm = re.sub(r"[^a-z0-9]+", "", key_orig.lower())
                 if norm == "supportteam":
                     aliases = ["SupportTeam","support-team","support_team"]
                 elif norm == "appcatid":
@@ -544,7 +500,7 @@ def choose_attachment_name(findings, servicename: str, rule_prefix_used: str, ov
     base = sanitize_filename(base)
     return base + ("" if base.lower().endswith(".csv") else ".csv")
 
-# -------------------- Email (with sleek table + explanations + plain-text) --------------------
+# -------------------- Email (sleek table + explanations only) --------------------
 SMTP_HOST     = os.getenv("SMTP_HOST", "smtp-aws.loud.mogc.net")
 SMTP_PORT     = int(os.getenv("SMTP_PORT", "25"))
 FROM_ADDRESS  = os.getenv("SMTP_FROM", "dummy@omb.com")
@@ -553,7 +509,7 @@ SMTP_USER     = os.getenv("SMTP_USER", "")
 SMTP_PASS     = os.getenv("SMTP_PASS", "")
 SMTP_STARTTLS = (os.getenv("SMTP_STARTTLS", "").strip().lower() in ("1","true","yes"))
 
-def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, servicename: str, subject_hint: str = "", extra_html: str = "", plain_fallback_lines=None, explain_html=""):
+def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, servicename: str, subject_hint: str = "", extra_html: str = "", explain_html: str = ""):
     to_address = to_address or DEFAULT_TO
     servicename_u = (servicename or "report").upper()
     emailsubject = subject_hint or f"{servicename_u} security_findings report"
@@ -566,9 +522,6 @@ def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, 
         body_html.append(extra_html)
         if explain_html:
             body_html.append(explain_html)
-        if plain_fallback_lines:
-            safe_text = "\n".join(plain_fallback_lines)
-            body_html.append(f'<pre style="font-family:Consolas, monospace; font-size:12px; color:#334155; margin-top:12px;">{safe_text}</pre>')
     body_html.append("<br><b>Regards,</b><br>BMO Cloud Operations")
     html_part = MIMEText("".join(body_html), "html")
 
@@ -630,8 +583,7 @@ def lambda_handler(event, context):
     if not regions:
         regions = [os.getenv("AWS_REGION", "us-east-1")]
 
-    # Filters (env-driven to keep your “old form”)
-    #days_back = getenv_int("DAYS_BACK", 7)
+    # Filters (env-driven to keep your “old form”) — allow external override via event
     days_back = int(event.get("days_back", os.getenv("DAYS_BACK", 7)))
     base = make_time_filter(days_back)
 
@@ -653,14 +605,13 @@ def lambda_handler(event, context):
             key_mode = "GENERATOR_ID"
         findings = dedupe_latest(findings, key_mode)
 
-    # ===== Build sleek Workflow × Compliance summary for email (unique resources) =====
+    # ===== Sleek summary for email (unique resources) =====
     counts, wf_list, cp_list = build_workflow_compliance_summary(findings)
-    summary_html   = summary_to_html(counts, wf_list, cp_list)
-    plain_lines    = summary_to_rows(counts, wf_list, cp_list)
-    explain_html   = summary_explanations_html(counts, wf_list, cp_list)
-    # ================================================================================
+    summary_html = summary_to_html(counts, wf_list, cp_list)
+    explain_html = summary_explanations_html(counts, wf_list, cp_list)
+    # ======================================================
 
-    # CSV (unchanged order; now includes Resource.AccountId as requested)
+    # CSV (unchanged order; Account IDs forced to full digits)
     csv_bytes = to_csv_bytes(findings)
 
     # Attachment name
@@ -675,7 +626,7 @@ def lambda_handler(event, context):
     # Email body
     email_body = os.getenv("EMAIL_BODY", "Result of BMOASR ConfigRule (auto-generated Security Hub findings report).")
 
-    # Send (embed: grid + explanations + plaintext)
+    # Send (embed: grid + explanations; NO plaintext fallback)
     rc = send_email_with_attachment(
         to_address=os.getenv("SMTP_TO", ""),     # if empty -> FROM
         file_path=csv_path,
@@ -683,7 +634,6 @@ def lambda_handler(event, context):
         servicename=servicename,
         subject_hint=os.getenv("EMAIL_SUBJECT", ""),
         extra_html=summary_html,
-        plain_fallback_lines=plain_lines,
         explain_html=explain_html
     )
     if rc != 0:
@@ -695,6 +645,7 @@ def lambda_handler(event, context):
             "regions": regions,
             "rows": len(findings),
             "filename": os.path.basename(csv_path),
-            "sent_to": os.getenv("SMTP_TO", DEFAULT_TO)
+            "sent_to": os.getenv("SMTP_TO", DEFAULT_TO),
+            "days_back": days_back
         })
     }
