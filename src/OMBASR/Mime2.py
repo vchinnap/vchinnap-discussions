@@ -431,7 +431,7 @@ def lambda_handler(event, context):
     findings = collect_findings(regions, filters)
 
     # Dedupe (latest per rule)
-    if getenv_bool("LATEST_PER_RULE", True):
+    if getenv_bool("LATEST_PER_RULE", False):
         key_mode = os.getenv("LATEST_KEY", "GENERATOR_ID").strip().upper()
         if key_mode not in ("GENERATOR_ID", "ACCOUNT_RULE"):
             key_mode = "GENERATOR_ID"
