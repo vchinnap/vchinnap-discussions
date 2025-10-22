@@ -400,6 +400,8 @@ def summary_explanations_html(counts, workflows, compliances) -> str:
 
 # -------------------- CSV (same order; AccountIds forced to full digits) --------------------
 def to_csv_bytes(findings):
+    wanted_tags = [t.lower() for t in getenv_list("RESOURCE_TAG_KEYS")] or ["appcatid","supportteam","author"]
+
     columns = [
         # NOTE: _Region intentionally NOT exported
         "AwsAccountId","Id","GeneratorId","RuleName","Title","Description",
