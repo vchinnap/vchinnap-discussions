@@ -57,16 +57,20 @@ def make_optional_filters(rule_title_prefix, rule_prefix, compliance_statuses, w
     """
     If RULE_TITLE_PREFIX is set, filter Title by PREFIX (e.g., BMOASR-ConfigRule-HCOPS-).
     Else if RULE_PREFIX is set, filter GeneratorId by CONTAINS.
+    Also allows filtering by ComplianceStatus, WorkflowStatus, and RecordState (default ACTIVE).
     """
     f = {}
     if rule_title_prefix:
         f["Title"] = [{"Value": rule_title_prefix, "Comparison": "PREFIX"}]
     elif rule_prefix:
         f["GeneratorId"] = [{"Value": rule_prefix, "Comparison": "CONTAINS"}]
+
     if compliance_statuses:
         f["ComplianceStatus"] = [{"Value": s, "Comparison": "EQUALS"} for s in compliance_statuses]
     if workflow_statuses:
         f["WorkflowStatus"] = [{"Value": s, "Comparison": "EQUALS"} for s in workflow_statuses]
+
+    # Default to ACTIVE to avoid archived records unless explicitly overridden
     record_state = os.getenv("RECORD_STATE", "ACTIVE").strip().upper()
     if record_state:
         f["RecordState"] = [{"Value": record_state, "Comparison": "EQUALS"}]
@@ -243,6 +247,11 @@ def _get(d: dict, dotted: str, default=""):
             return default
     return cur
 
+# --- NEW: normalize tag keys (case- and punctuation-insensitive) ---
+def _norm_tag_key(s: str) -> str:
+    # Lowercase and remove non [a-z0-9]; turns "Support-Team" / "support team" / "support_team" -> "supportteam"
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
 # ---------- AccountId display: force full digits in Excel/Sheets ----------
 def _excel_safe_account(x) -> str:
     """
@@ -322,7 +331,7 @@ def summary_to_html(counts, workflows, compliances) -> str:
     row_totals = {w: 0 for w in workflows}
     grand_total = 0
     for w in workflows:
-        for c in compliances:
+        for c in compliences := compliances:  # Python 3.8+/walrus ok; replace if needed
             v = counts.get((w, c), 0)
             row_totals[w] += v
             col_totals[c] += v
@@ -400,7 +409,8 @@ def summary_explanations_html(counts, workflows, compliances) -> str:
 
 # -------------------- CSV (same order; AccountIds forced to full digits) --------------------
 def to_csv_bytes(findings):
-    wanted_tags = [t.lower() for t in getenv_list("RESOURCE_TAG_KEYS")] or ["appcatid","supportteam","author"]
+    # Fixed set of tag columns you requested (headers preserved exactly)
+    tag_headers = ["Support-Team", "Environment", "AppCatID", "Author"]
 
     columns = [
         # NOTE: _Region intentionally NOT exported
@@ -410,8 +420,8 @@ def to_csv_bytes(findings):
         "CreatedAt","UpdatedAt",
         # Resource flattening (from primary resource)
         "Resource.Type","Resource.Id","Resource.Partition","Resource.Region","Resource.AccountId",
-        # Specific tag columns (exact header casing you asked for)
-        "Tag.appcatID","Tag.supportTeam","Tag.Author",
+        # Tag columns (exact header casing you asked for)
+        "Tag.Support-Team","Tag.Environment","Tag.AppCatID","Tag.Author",
         # Keep rich JSON fields as compact JSON strings
         "Remediation.Recommendation","ProductFields","UserDefinedFields","SourceUrl",
         "Note","Vulnerabilities","Compliance.RelatedRequirements","FindingProviderFields","Confidence","Criticality"
@@ -423,7 +433,9 @@ def to_csv_bytes(findings):
 
     for f in findings:
         res, _idx = _primary_resource(f)
-        res_tags = _extract_any_tags_from_resource(res)
+        res_tags_raw = _extract_any_tags_from_resource(res)  # lowercased keys, original punctuation preserved
+        # Build a normalization map so lookups tolerate hyphens/spaces/underscores/case
+        res_tags_norm = { _norm_tag_key(k): v for k, v in res_tags_raw.items() }
 
         row = []
         for col in columns:
@@ -451,11 +463,11 @@ def to_csv_bytes(findings):
                     row.append(_excel_safe_account(_account_id_from_resource(res, f))); continue
                 row.append(res.get(field, "")); continue
 
-            # Tag columns (tolerant lookups, keep original header case)
-               # Tag columns (case-insensitive lookups)
+            # Tag columns (case- and punctuation-insensitive lookups, header preserved)
             if col.startswith("Tag."):
-                key_wanted = col.split(".",1)[1].lower()  # appcatid, supportteam, author
-                row.append(res_tags.get(key_wanted, "")); continue
+                tag_key = col.split(".", 1)[1]                 # e.g., "Support-Team"
+                norm_key = _norm_tag_key(tag_key)              # -> "supportteam"
+                row.append(res_tags_norm.get(norm_key, ""));   continue
 
             # JSON-heavy
             if col in ["Types","Vulnerabilities","Compliance.RelatedRequirements"]:
@@ -622,7 +634,7 @@ def lambda_handler(event, context):
         fh.write(csv_bytes)
     print(f"[DEBUG] CSV written: {csv_path} ({len(csv_bytes)} bytes) rows={len(findings)}")
 
-    # Email body
+    # Email body (keep as-is, or customize to mention the window)
     email_body = os.getenv("EMAIL_BODY", "Result of BMOASR ConfigRule (auto-generated Security Hub findings report).")
 
     # Send (embed: grid + explanations; NO plaintext fallback)
