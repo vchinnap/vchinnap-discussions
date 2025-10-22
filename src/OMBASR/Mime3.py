@@ -487,7 +487,7 @@ def sanitize_filename(name: str) -> str:
 def choose_attachment_name(findings, servicename: str, rule_prefix_used: str, override: str | None) -> str:
     """
     If one rule in results -> that rule name.
-    Else -> BMOASR-ConfigRule-HCOPS-<servicename>-security_findings.csv or rule_prefix fallback.
+    Else -> <servicename>-security_findings.csv or rule_prefix fallback.
     """
     if override:
         base = override
@@ -496,7 +496,7 @@ def choose_attachment_name(findings, servicename: str, rule_prefix_used: str, ov
         if len(names) == 1:
             base = list(names)[0]
         else:
-            base = f"BMOASR-ConfigRule-HCOPS-{servicename}-security_findings" if servicename else (rule_prefix_used or "securityhub_findings")
+            base = f"{servicename}-security_findings" if servicename else (rule_prefix_used or "securityhub_findings")
     base = sanitize_filename(base)
     return base + ("" if base.lower().endswith(".csv") else ".csv")
 
@@ -615,7 +615,7 @@ def lambda_handler(event, context):
     csv_bytes = to_csv_bytes(findings)
 
     # Attachment name
-    servicename   = os.getenv("SERVICE_NAME")
+    servicename   = os.getenv("SERVICE_NAME", "BMOASR-ConfigRule-HCOPS")
     rule_prefix_used = rule_title_prefix or rule_prefix
     csv_filename = choose_attachment_name(findings, servicename, rule_prefix_used, os.getenv("CSV_FILENAME"))
     csv_path = f"/tmp/{csv_filename}"
