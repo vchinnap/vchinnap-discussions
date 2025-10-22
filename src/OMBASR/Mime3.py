@@ -11,7 +11,7 @@ import random
 from datetime import datetime, timezone, timedelta
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
-from email.mime_text import MIMEText
+from email.mime.text import MIMEText
 from email import encoders
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
