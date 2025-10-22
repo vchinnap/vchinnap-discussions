@@ -207,13 +207,11 @@ def _extract_any_tags_from_resource(res: dict):
     - res['Tags'] if present (list[{Key,Value}] or dict)
     - or the first Details.* that contains 'Tags'
     """
-    # direct
     t = res.get("Tags")
     tags = _tags_to_dict(t)
     if tags:
         return tags
 
-    # sometimes tags live under Details.<AwsService>.Tags
     details = res.get("Details")
     if isinstance(details, dict):
         for _, v in details.items():
@@ -242,11 +240,44 @@ def _get(d: dict, dotted: str, default=""):
             return default
     return cur
 
-# --------- Helpers for unique resource key (without changing CSV) ----------
+# ---------- Normalizers for tolerant tag lookup ----------
+def _normalize_key(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", s.strip().lower())
+
+def _get_tag_any(tags_map: dict, wanted_key: str, extra_aliases=None, default=""):
+    """
+    Tolerant tag match: direct lower, normalized, and optional aliases.
+    """
+    if not isinstance(tags_map, dict):
+        return default
+
+    # direct lower lookup
+    v = tags_map.get((wanted_key or "").lower())
+    if v not in (None, ""):
+        return v
+
+    # normalized lookup
+    normed = {_normalize_key(k): v for k, v in tags_map.items()}
+    v = normed.get(_normalize_key(wanted_key))
+    if v not in (None, ""):
+        return v
+
+    # alias lookup
+    if extra_aliases:
+        for a in extra_aliases:
+            v = tags_map.get((a or "").lower())
+            if v not in (None, ""):
+                return v
+            v = normed.get(_normalize_key(a))
+            if v not in (None, ""):
+                return v
+    return default
+
 def _account_id_from_resource(res: dict, finding: dict) -> str:
     """
     Prefer resource.AccountId; else parse from ARN in Resource.Id; else finding.AwsAccountId.
-    (We do NOT add Resource.AccountId to CSV to keep format unchanged.)
     """
     if isinstance(res, dict):
         acc = res.get("AccountId") or res.get("accountId")
@@ -279,9 +310,7 @@ def build_workflow_compliance_summary(findings):
         compliances.add(cp)
 
         res, _ = _primary_resource(f)
-        rid = ""
-        if isinstance(res, dict):
-            rid = res.get("Id") or res.get("id") or ""
+        rid = res.get("Id") or res.get("id") or "" if isinstance(res, dict) else ""
         acct = _account_id_from_resource(res, f)
         keyres = (acct, rid)
 
@@ -300,7 +329,7 @@ def build_workflow_compliance_summary(findings):
     return counts, wf_sorted, cp_sorted
 
 def summary_to_html(counts, workflows, compliances) -> str:
-    """Return a compact, sleek HTML table for the email body (no heading label)."""
+    """Sleek HTML grid for email body."""
     th = 'style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:600;white-space:nowrap"'
     td = 'style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:center"'
     hd = 'style="padding:6px 10px;background:#f8fafc;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700"'
@@ -349,11 +378,73 @@ def summary_to_html(counts, workflows, compliances) -> str:
     html.append('</table></div>')
     return "".join(html)
 
-# -------------------- CSV --------------------
+def summary_to_rows(counts, workflows, compliances):
+    """Plain-text matrix (fallback)."""
+    w_name = max(12, max((len(w) for w in workflows), default=0))
+    c_widths = {c: max(7, len(c)) for c in compliances}
+    head = "Workflow".ljust(w_name) + " | " + " | ".join(c.ljust(c_widths[c]) for c in compliances) + " | TOTAL"
+    sep = "-" * len(head)
+    lines = [head, sep]
+    for w in workflows:
+        row_vals = []
+        total = 0
+        for c in compliances:
+            v = counts.get((w, c), 0)
+            total += v
+            row_vals.append(str(v).ljust(c_widths[c]))
+        lines.append(w.ljust(w_name) + " | " + " | ".join(row_vals) + f" | {total}")
+    col_tot = []
+    gtot = 0
+    for c in compliances:
+        col = sum(counts.get((w, c), 0) for w in workflows)
+        gtot += col
+        col_tot.append(str(col).ljust(c_widths[c]))
+    lines += [sep, "TOTAL".ljust(w_name) + " | " + " | ".join(col_tot) + f" | {gtot}"]
+    return lines
+
+def summary_explanations_html(counts, workflows, compliances) -> str:
+    """
+    Short bullets like: NEW × PASSED — 5 unique resources.
+    Only prints combos with count > 0.
+    """
+    if not counts:
+        return ""
+
+    # Optional human hint texts (kept neutral)
+    wf_hint = {
+        "NEW": "newly created or reopened",
+        "NOTIFIED": "owners have been notified",
+        "RESOLVED": "workflow closed",
+        "SUPPRESSED": "intentionally suppressed",
+        "": "unspecified workflow"
+    }
+    cp_hint = {
+        "FAILED": "currently non-compliant",
+        "WARNING": "at-risk or warning",
+        "PASSED": "currently compliant",
+        "NOT_AVAILABLE": "no compliance status",
+        "": "unspecified compliance"
+    }
+
+    items = []
+    for w in workflows:
+        for c in compliances:
+            n = counts.get((w, c), 0)
+            if n > 0:
+                wh = wf_hint.get(w, "workflow")
+                ch = cp_hint.get(c, "compliance")
+                items.append(f'<li><b>{w or "UNSPECIFIED"}</b> × <b>{c or "UNSPECIFIED"}</b> — {n} unique resources '
+                             f'({wh}; {ch}).</li>')
+
+    if not items:
+        return ""
+
+    return '<ul style="margin:10px 0 0 18px; padding:0; color:#334155; font-size:13px">' + "".join(items) + "</ul>"
+
+# -------------------- CSV (same order; +Resource.AccountId added) --------------------
 def to_csv_bytes(findings):
     # Tag keys of interest (case-insensitive). Default to requested three.
-    wanted_tags = [t.lower() for t in getenv_list("RESOURCE_TAG_KEYS")] or ["appcatid","supportteam","author"]
-
+    # We keep the same three fixed headers you showed earlier.
     columns = [
         # NOTE: _Region intentionally NOT exported
         "AwsAccountId","Id","GeneratorId","RuleName","Title","Description",
@@ -361,7 +452,7 @@ def to_csv_bytes(findings):
         "Compliance.Status","Workflow.Status","RecordState","FirstObservedAt","LastObservedAt",
         "CreatedAt","UpdatedAt",
         # Resource flattening (from primary resource)
-        "Resource.Type","Resource.Id","Resource.Partition","Resource.Region",
+        "Resource.Type","Resource.Id","Resource.Partition","Resource.Region","Resource.AccountId",
         # Specific tag columns (exact header casing you asked for)
         "Tag.appcatID","Tag.supportTeam","Tag.Author",
         # Keep rich JSON fields as compact JSON strings
@@ -395,12 +486,21 @@ def to_csv_bytes(findings):
             # Resource columns
             if col.startswith("Resource."):
                 field = col.split(".",1)[1]
+                if field == "AccountId":
+                    row.append(_account_id_from_resource(res, f)); continue
                 row.append(res.get(field, "")); continue
 
-            # Tag columns (case-insensitive lookups)
+            # Tag columns (tolerant lookups)
             if col.startswith("Tag."):
-                key_wanted = col.split(".",1)[1].lower()  # appcatid, supportteam, author
-                row.append(res_tags.get(key_wanted, "")); continue
+                key_orig = col.split(".",1)[1]   # e.g., appcatID, supportTeam, Author (header case preserved)
+                aliases = []
+                norm = _normalize_key(key_orig)
+                if norm == "supportteam":
+                    aliases = ["SupportTeam","support-team","support_team"]
+                elif norm == "appcatid":
+                    aliases = ["AppCatID","AppCatId","appcatid"]
+                v = _get_tag_any(res_tags, key_orig, extra_aliases=aliases, default="")
+                row.append(v); continue
 
             # JSON-heavy
             if col in ["Types","Vulnerabilities","Compliance.RelatedRequirements"]:
@@ -444,7 +544,7 @@ def choose_attachment_name(findings, servicename: str, rule_prefix_used: str, ov
     base = sanitize_filename(base)
     return base + ("" if base.lower().endswith(".csv") else ".csv")
 
-# -------------------- Email (with sleek table injected) --------------------
+# -------------------- Email (with sleek table + explanations + plain-text) --------------------
 SMTP_HOST     = os.getenv("SMTP_HOST", "smtp-aws.loud.mogc.net")
 SMTP_PORT     = int(os.getenv("SMTP_PORT", "25"))
 FROM_ADDRESS  = os.getenv("SMTP_FROM", "dummy@omb.com")
@@ -453,7 +553,7 @@ SMTP_USER     = os.getenv("SMTP_USER", "")
 SMTP_PASS     = os.getenv("SMTP_PASS", "")
 SMTP_STARTTLS = (os.getenv("SMTP_STARTTLS", "").strip().lower() in ("1","true","yes"))
 
-def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, servicename: str, subject_hint: str = "", extra_html: str = ""):
+def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, servicename: str, subject_hint: str = "", extra_html: str = "", plain_fallback_lines=None, explain_html=""):
     to_address = to_address or DEFAULT_TO
     servicename_u = (servicename or "report").upper()
     emailsubject = subject_hint or f"{servicename_u} security_findings report"
@@ -464,6 +564,11 @@ def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, 
     if extra_html:
         body_html.append('<div style="margin:10px 0 14px 0"></div>')
         body_html.append(extra_html)
+        if explain_html:
+            body_html.append(explain_html)
+        if plain_fallback_lines:
+            safe_text = "\n".join(plain_fallback_lines)
+            body_html.append(f'<pre style="font-family:Consolas, monospace; font-size:12px; color:#334155; margin-top:12px;">{safe_text}</pre>')
     body_html.append("<br><b>Regards,</b><br>BMO Cloud Operations")
     html_part = MIMEText("".join(body_html), "html")
 
@@ -525,7 +630,7 @@ def lambda_handler(event, context):
     if not regions:
         regions = [os.getenv("AWS_REGION", "us-east-1")]
 
-    # Filters (keep old logic: env var)
+    # Filters (env-driven to keep your “old form”)
     days_back = getenv_int("DAYS_BACK", 7)
     base = make_time_filter(days_back)
 
@@ -549,10 +654,12 @@ def lambda_handler(event, context):
 
     # ===== Build sleek Workflow × Compliance summary for email (unique resources) =====
     counts, wf_list, cp_list = build_workflow_compliance_summary(findings)
-    summary_html = summary_to_html(counts, wf_list, cp_list)
+    summary_html   = summary_to_html(counts, wf_list, cp_list)
+    plain_lines    = summary_to_rows(counts, wf_list, cp_list)
+    explain_html   = summary_explanations_html(counts, wf_list, cp_list)
     # ================================================================================
 
-    # CSV (unchanged format)
+    # CSV (unchanged order; now includes Resource.AccountId as requested)
     csv_bytes = to_csv_bytes(findings)
 
     # Attachment name
@@ -565,16 +672,18 @@ def lambda_handler(event, context):
     print(f"[DEBUG] CSV written: {csv_path} ({len(csv_bytes)} bytes) rows={len(findings)}")
 
     # Email body
-    email_body = os.getenv("EMAIL_BODY", "Result of BMOASR ConfigRule(auto-generated Security Hub findings report).")
+    email_body = os.getenv("EMAIL_BODY", "Result of BMOASR ConfigRule (auto-generated Security Hub findings report).")
 
-    # Send (embed the summary table)
+    # Send (embed: grid + explanations + plaintext)
     rc = send_email_with_attachment(
         to_address=os.getenv("SMTP_TO", ""),     # if empty -> FROM
         file_path=csv_path,
         emailbody=email_body,
         servicename=servicename,
         subject_hint=os.getenv("EMAIL_SUBJECT", ""),
-        extra_html=summary_html
+        extra_html=summary_html,
+        plain_fallback_lines=plain_lines,
+        explain_html=explain_html
     )
     if rc != 0:
         raise RuntimeError("Email send failed")
