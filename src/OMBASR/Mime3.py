@@ -611,10 +611,11 @@ def lambda_handler(event, context):
     base = make_time_filter(days_back)
 
     rule_title_prefix   = os.getenv("RULE_TITLE_PREFIX", "BMOASR-ConfigRule-HCOPS-").strip()
-    rule_prefix         = os.getenv("RULE_PREFIX", "").strip()    # fallback if title prefix not set
+    #rule_prefix         = os.getenv("RULE_PREFIX", "").strip()    # fallback if title prefix not set
     compliance_statuses = getenv_list("COMPLIANCE_STATUSES")
     workflow_statuses   = getenv_list("WORKFLOW_STATUSES")
-    extras = make_optional_filters(rule_title_prefix, rule_prefix, compliance_statuses, workflow_statuses)
+   # extras = make_optional_filters(rule_title_prefix, rule_prefix, compliance_statuses, workflow_statuses)
+    extras = make_optional_filters(rule_title_prefix, compliance_statuses, workflow_statuses)
     filters = merge_filters(base, extras)
     logger.info("Effective filters: %s", json.dumps(filters))
 
