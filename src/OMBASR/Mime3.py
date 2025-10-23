@@ -414,7 +414,7 @@ def to_csv_bytes(findings):
 
     columns = [
         # NOTE: _Region intentionally NOT exported
-        "AwsAccountId","Id","GeneratorId","RuleName","Title","Description",
+        "RuleName","Title","Description",
         "Types","ProductArn","CompanyName","ProductName","Severity.Label","Severity.Original",
         "Compliance.Status","Workflow.Status","RecordState","FirstObservedAt","LastObservedAt",
         "CreatedAt","UpdatedAt",
@@ -425,18 +425,29 @@ def to_csv_bytes(findings):
         # Keep rich JSON fields as compact JSON strings
         "Remediation.Recommendation","ProductFields","UserDefinedFields","SourceUrl",
         "Note","Vulnerabilities","Compliance.RelatedRequirements","FindingProviderFields","Confidence","Criticality"
+        "AwsAccountId","Id","GeneratorId",
     ]
-
+    display_columns = []
+    for col in columns:
+        if col.startswith("Tag.") or col.startswith("Resource."):
+            display_columns.append(col.split(".", 1)[1])
+        elif col == "Compliance.Status":
+            display_columns.append("ComplianceStatus")
+        elif col == "Workflow.Status":
+            display_columns.append("WorkflowStatus")
+        elif col == "Severity.Status":
+            display_columns.append("SeverityLabel")
+        else:
+            display_columns.append(col)
+            
     out = io.StringIO(newline="")
     w = csv.writer(out)
-    w.writerow(columns)
+    w.writerow(display_columns)
 
     for f in findings:
         res, _idx = _primary_resource(f)
-        res_tags_raw = _extract_any_tags_from_resource(res)  # lowercased keys, original punctuation preserved
-        # Build a normalization map so lookups tolerate hyphens/spaces/underscores/case
-        res_tags_norm = { _norm_tag_key(k): v for k, v in res_tags_raw.items() }
-
+        res_tags = _extract_any_tags_from_resource(res)  
+    
         row = []
         for col in columns:
             if col == "RuleName":
@@ -463,11 +474,12 @@ def to_csv_bytes(findings):
                     row.append(_excel_safe_account(_account_id_from_resource(res, f))); continue
                 row.append(res.get(field, "")); continue
 
-            # Tag columns (case- and punctuation-insensitive lookups, header preserved)
+            # Tag columns (case-insensitive lookups)
             if col.startswith("Tag."):
-                tag_key = col.split(".", 1)[1]                 # e.g., "Support-Team"
-                norm_key = _norm_tag_key(tag_key)              # -> "supportteam"
-                row.append(res_tags_norm.get(norm_key, ""));   continue
+                key_wanted = col.split(".", 1)[1].lower().replace("-", "")
+                # key_wanted = col.split(".", 1)[1].lower()
+                supportteam, author             # -> "supportteam"
+                row.append(res_tags.get(key_wanted, ""));   continue
 
             # JSON-heavy
             if col in ["Types","Vulnerabilities","Compliance.RelatedRequirements"]:
@@ -511,10 +523,10 @@ def choose_attachment_name(findings, servicename: str, rule_prefix_used: str, ov
     base = sanitize_filename(base)
     return base + ("" if base.lower().endswith(".csv") else ".csv")
 
-# -------------------- Email (sleek table + explanations only) --------------------
-SMTP_HOST     = os.getenv("SMTP_HOST", "smtp-aws.loud.mogc.net")
+# -------------------- Email () --------------------
+SMTP_HOST     = os.getenv("SMTP_HOST", "smtp-aws.hloud.mogc.net")
 SMTP_PORT     = int(os.getenv("SMTP_PORT", "25"))
-FROM_ADDRESS  = os.getenv("SMTP_FROM", "dummy@omb.com")
+FROM_ADDRESS  = os.getenv("SMTP_FROM", "operations@omb.com")
 DEFAULT_TO    = os.getenv("SMTP_TO", FROM_ADDRESS)
 SMTP_USER     = os.getenv("SMTP_USER", "")
 SMTP_PASS     = os.getenv("SMTP_PASS", "")
@@ -522,11 +534,12 @@ SMTP_STARTTLS = (os.getenv("SMTP_STARTTLS", "").strip().lower() in ("1","true","
 
 def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, servicename: str, subject_hint: str = "", extra_html: str = "", explain_html: str = ""):
     to_address = to_address or DEFAULT_TO
-    servicename_u = (servicename or "report").upper()
+    # servicename_u = (servicename or "report").upper()
+    servicename_u = (servicename or "report")
     emailsubject = subject_hint or f"{servicename_u} security_findings report"
 
     body_html = []
-    body_html.append(f"<b><u>{emailsubject}</u></b><br>")
+  #  body_html.append(f"<b><u> {days_back} {emailsubject}</u></b><br>")
     body_html.append(f"<p>{emailbody}</p>")
     if extra_html:
         body_html.append('<div style="margin:10px 0 14px 0"></div>')
@@ -540,7 +553,7 @@ def send_email_with_attachment(to_address: str, file_path: str, emailbody: str, 
     msg["From"] = FROM_ADDRESS
     msg["To"] = to_address
     msg["Subject"] = emailsubject
-    cc_addr = os.getenv("SMTP_CC", "").strip()
+    cc_addr = os.getenv("SMTP_CC", "vinod.chinnapati@omb.com, vinod.chinnapati@omb.com").strip()
     if cc_addr:
         msg["Cc"] = cc_addr
     msg.attach(html_part)
