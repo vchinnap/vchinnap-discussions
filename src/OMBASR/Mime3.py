@@ -627,7 +627,8 @@ def lambda_handler(event, context):
 
     # Attachment name
     servicename   = os.getenv("SERVICE_NAME", "BMOASR-ConfigRule-HCOPS")
-    rule_prefix_used = rule_title_prefix or rule_prefix
+   # rule_prefix_used = rule_title_prefix or rule_prefix
+    rule_prefix_used = rule_title_prefix
     csv_filename = choose_attachment_name(findings, servicename, rule_prefix_used, os.getenv("CSV_FILENAME"))
     csv_path = f"/tmp/{csv_filename}"
     with open(csv_path, "wb") as fh:
@@ -635,7 +636,7 @@ def lambda_handler(event, context):
     print(f"[DEBUG] CSV written: {csv_path} ({len(csv_bytes)} bytes) rows={len(findings)}")
 
     # Email body
-    email_body = os.getenv("EMAIL_BODY", "Result of BMOASR Security Hub Findings updated in the last {days_back} days.")
+    email_body = os.getenv("EMAIL_BODY", f"BMOASR Security Hub Findings updated in the last {days_back} days.")
 
     # Send (embed: grid + explanations; NO plaintext fallback)
     rc = send_email_with_attachment(
