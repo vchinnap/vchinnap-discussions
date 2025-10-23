@@ -53,7 +53,7 @@ def make_time_filter(days_back: int):
     # SecurityHub supports DateRange for UpdatedAt
     return {"UpdatedAt": [{"DateRange": {"Value": days_back, "Unit": "DAYS"}}]}
 
-def make_optional_filters(rule_title_prefix, rule_prefix, compliance_statuses, workflow_statuses):
+def make_optional_filters(rule_title_prefix, compliance_statuses, workflow_statuses):
     """
     If RULE_TITLE_PREFIX is set, filter Title by PREFIX (e.g., BMOASR-ConfigRule-HCOPS-).
     Else if RULE_PREFIX is set, filter GeneratorId by CONTAINS.
@@ -62,15 +62,15 @@ def make_optional_filters(rule_title_prefix, rule_prefix, compliance_statuses, w
     f = {}
     if rule_title_prefix:
         f["Title"] = [{"Value": rule_title_prefix, "Comparison": "PREFIX"}]
-    elif rule_prefix:
-        f["GeneratorId"] = [{"Value": rule_prefix, "Comparison": "CONTAINS"}]
+    #elif rule_prefix:
+    #    f["GeneratorId"] = [{"Value": rule_prefix, "Comparison": "CONTAINS"}]
 
     if compliance_statuses:
         f["ComplianceStatus"] = [{"Value": s, "Comparison": "EQUALS"} for s in compliance_statuses]
     if workflow_statuses:
         f["WorkflowStatus"] = [{"Value": s, "Comparison": "EQUALS"} for s in workflow_statuses]
 
-    # Default to ACTIVE to avoid archived records unless explicitly overridden
+    
     record_state = os.getenv("RECORD_STATE", "ACTIVE").strip().upper()
     if record_state:
         f["RecordState"] = [{"Value": record_state, "Comparison": "EQUALS"}]
@@ -193,6 +193,7 @@ def json_safe(x):
         return str(x)
 
 def _tags_to_dict(tags_field):
+    def normalize(k): return k.lower().replace("-", "")
     out = {}
     if isinstance(tags_field, list):
         for t in tags_field:
@@ -201,11 +202,11 @@ def _tags_to_dict(tags_field):
             k = (t.get("Key") or "").strip()
             v = t.get("Value")
             if k:
-                out[k.lower()] = v
+                out[normalize(k)] = v
     elif isinstance(tags_field, dict):
         for k, v in tags_field.items():
             if isinstance(k, str):
-                out[k.lower()] = v
+                out[normalize(k)] = v
     return out
 
 def _extract_any_tags_from_resource(res: dict):
@@ -247,10 +248,6 @@ def _get(d: dict, dotted: str, default=""):
             return default
     return cur
 
-# --- NEW: normalize tag keys (case- and punctuation-insensitive) ---
-def _norm_tag_key(s: str) -> str:
-    # Lowercase and remove non [a-z0-9]; turns "Support-Team" / "support team" / "support_team" -> "supportteam"
-    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
 
 # ---------- AccountId display: force full digits in Excel/Sheets ----------
 def _excel_safe_account(x) -> str:
@@ -320,7 +317,7 @@ def build_workflow_compliance_summary(findings):
     return counts, wf_sorted, cp_sorted
 
 def summary_to_html(counts, workflows, compliances) -> str:
-    """Sleek HTML grid for email body."""
+    """HTML grid for email body."""
     th = 'style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:600;white-space:nowrap"'
     td = 'style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:center"'
     hd = 'style="padding:6px 10px;background:#f8fafc;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700"'
@@ -331,7 +328,7 @@ def summary_to_html(counts, workflows, compliances) -> str:
     row_totals = {w: 0 for w in workflows}
     grand_total = 0
     for w in workflows:
-        for c in compliences := compliances:  # Python 3.8+/walrus ok; replace if needed
+        for c in compliances:  
             v = counts.get((w, c), 0)
             row_totals[w] += v
             col_totals[c] += v
@@ -414,14 +411,16 @@ def to_csv_bytes(findings):
 
     columns = [
         # NOTE: _Region intentionally NOT exported
-        "RuleName","Title","Description",
-        "Types","ProductArn","CompanyName","ProductName","Severity.Label","Severity.Original",
-        "Compliance.Status","Workflow.Status","RecordState","FirstObservedAt","LastObservedAt",
-        "CreatedAt","UpdatedAt",
+         # Specific tag columns (exact header causing you asked for)
+         "Resource.AccountId","Compliance.Status","Workflow.Status","Severity.Label"
+        "Title", "Resource.Id"
+        "Tag.AppCatID", "Tag.SupportTeam",
+        "Tag.Author", "Tag.Environment", "Resource.Type","Resource.Region",
+        "UpdatedAt","CreatedAt","RecordState"
         # Resource flattening (from primary resource)
-        "Resource.Type","Resource.Id","Resource.Partition","Resource.Region","Resource.AccountId",
+        
         # Tag columns (exact header casing you asked for)
-        "Tag.Support-Team","Tag.Environment","Tag.AppCatID","Tag.Author",
+        
         # Keep rich JSON fields as compact JSON strings
         "Remediation.Recommendation","ProductFields","UserDefinedFields","SourceUrl",
         "Note","Vulnerabilities","Compliance.RelatedRequirements","FindingProviderFields","Confidence","Criticality"
