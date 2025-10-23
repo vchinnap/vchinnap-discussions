@@ -639,7 +639,7 @@ def lambda_handler(event, context):
 
     # Attachment name
     servicename   = os.getenv("SERVICE_NAME", "BMOASR-ConfigRule-HCOPS")
-   # rule_prefix_used = rule_title_prefix or rule_prefix
+    # rule_prefix_used = rule_title_prefix or rule_prefix
     rule_prefix_used = rule_title_prefix
     csv_filename = choose_attachment_name(findings, servicename, rule_prefix_used, os.getenv("CSV_FILENAME"))
     csv_path = f"/tmp/{csv_filename}"
