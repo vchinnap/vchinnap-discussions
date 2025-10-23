@@ -634,8 +634,8 @@ def lambda_handler(event, context):
         fh.write(csv_bytes)
     print(f"[DEBUG] CSV written: {csv_path} ({len(csv_bytes)} bytes) rows={len(findings)}")
 
-    # Email body (keep as-is, or customize to mention the window)
-    email_body = os.getenv("EMAIL_BODY", "Result of BMOASR ConfigRule (auto-generated Security Hub findings report).")
+    # Email body
+    email_body = os.getenv("EMAIL_BODY", "Result of BMOASR Security Hub Findings updated in the last {days_back} days.")
 
     # Send (embed: grid + explanations; NO plaintext fallback)
     rc = send_email_with_attachment(
