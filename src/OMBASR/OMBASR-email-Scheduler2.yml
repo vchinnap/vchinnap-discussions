@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EventBridge Scheduler to invoke Lambda at 8:00 AM America/Toronto (Daily/Weekly/Monthly)
+
+Parameters:
+  LambdaFunctionArn:
+    Type: String
+    Default: arn:aws:lambda:us-east-1:332055852319:function:BMOASR-SecurityHub-Report
+  DayBackDaily:
+    Type: Number
+    Default: 7
+    Description: Daily job lookback window in days
+  DayBackWeekly:
+    Type: Number
+    Default: 7
+    Description: Weekly job lookback window in days
+  DayBackMonthly:
+    Type: Number
+    Default: 30
+    Description: Monthly job lookback window in days
+
+Resources:
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      PermissionsBoundary: !Sub "arn:aws:iam::${AWS::AccountId}:policy/bmo-permissionboundary-policy"
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !Ref LambdaFunctionArn
+                  - !Sub '${LambdaFunctionArn}:*'
+
+  # ---- Daily at 8:00 AM America/Toronto, every day ----
+  DailySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "BMOASR-SecurityHub-Daily-Report-${AWS::StackName}"
+      FlexibleTimeWindow: { Mode: OFF }
+      ScheduleExpression: "cron(0 8 * * ? *)"
+      ScheduleExpressionTimezone: "America/Toronto"
+      State: ENABLED
+      Target:
+        Arn: !Ref LambdaFunctionArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub |
+          {
+            "day_back": ${DayBackDaily},
+            "frequency": "daily",
+            "scheduled_time": "<aws.scheduler.scheduled-time>"
+          }
+
+  # ---- Weekly at 8:00 AM America/Toronto, every Monday ----
+  WeeklySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "BMOASR-SecurityHub-Weekly-Report-${AWS::StackName}"
+      FlexibleTimeWindow: { Mode: OFF }
+      ScheduleExpression: "cron(0 8 ? * MON *)"
+      ScheduleExpressionTimezone: "America/Toronto"
+      State: ENABLED
+      Target:
+        Arn: !Ref LambdaFunctionArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub |
+          {
+            "day_back": ${DayBackWeekly},
+            "frequency": "weekly",
+            "scheduled_time": "<aws.scheduler.scheduled-time>"
+          }
+
+  # ---- Monthly at 8:00 AM America/Toronto, on the 1st ----
+  MonthlySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "BMOASR-SecurityHub-Monthly-Report-${AWS::StackName}"
+      FlexibleTimeWindow: { Mode: OFF }
+      ScheduleExpression: "cron(0 8 1 * ? *)"
+      ScheduleExpressionTimezone: "America/Toronto"
+      State: ENABLED
+      Target:
+        Arn: !Ref LambdaFunctionArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub |
+          {
+            "day_back": ${DayBackMonthly},
+            "frequency": "monthly",
+            "scheduled_time": "<aws.scheduler.scheduled-time>"
+          }
