@@ -4,6 +4,7 @@ Description: EventBridge Scheduler to invoke Lambda at 8:00 AM America/Toronto
 Parameters:
   LambdaFunctionArn:
     Type: String
+    Default: arn:aws:lambda:us-east-1:332055852319:function:BMOASR-SecurityHub-Report
   DayBack:
     Type: Number
     Default: 7
@@ -19,6 +20,7 @@ Resources:
           - Effect: Allow
             Principal: { Service: scheduler.amazonaws.com }
             Action: sts:AssumeRole
+      PermissionsBoundary: !Sub "arn:aws:iam::${AWS::AccountId}:policy/bmo-permissionboundary-policy"
       Policies:
         - PolicyName: InvokeLambda
           PolicyDocument:
@@ -31,10 +33,10 @@ Resources:
                   - !Ref LambdaFunctionArn
                   - !Sub '${LambdaFunctionArn}:*'
 
-  Morning8amSchedule:
+  DailySchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
-      Name: "daily-8am-toronto"
+      Name: "BMOASR-SecurityHub-Daily-Report"
       FlexibleTimeWindow: { Mode: OFF }
       ScheduleExpression: "cron(0 8 * * ? *)"   # 8:00 every day
       ScheduleExpressionTimezone: "America/Toronto"
@@ -45,8 +47,6 @@ Resources:
         # This is what your Lambda will receive as the event
         Input: !Sub |
           {
-            "source": "scheduler",
-            "task": "morning-run",
             "day_back": ${DayBack},
             "scheduled_time": "<aws.scheduler.scheduled-time>"
           }
