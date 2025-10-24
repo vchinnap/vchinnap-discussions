@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EventBridge Scheduler to invoke Lambda at 8:00 AM America/Toronto
+
+Parameters:
+  LambdaFunctionArn:
+    Type: String
+  DayBack:
+    Type: Number
+    Default: 7
+    Description: Number of days to look back (passed to Lambda as event.day_back)
+
+Resources:
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                # allow function, versions, and aliases
+                Resource:
+                  - !Ref LambdaFunctionArn
+                  - !Sub '${LambdaFunctionArn}:*'
+
+  Morning8amSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: "daily-8am-toronto"
+      FlexibleTimeWindow: { Mode: OFF }
+      ScheduleExpression: "cron(0 8 * * ? *)"   # 8:00 every day
+      ScheduleExpressionTimezone: "America/Toronto"
+      State: ENABLED
+      Target:
+        Arn: !Ref LambdaFunctionArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        # This is what your Lambda will receive as the event
+        Input: !Sub |
+          {
+            "source": "scheduler",
+            "task": "morning-run",
+            "day_back": ${DayBack},
+            "scheduled_time": "<aws.scheduler.scheduled-time>"
+          }
