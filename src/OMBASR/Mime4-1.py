@@ -296,7 +296,7 @@ def summary_to_html_minimal(counts) -> str:
 
     new_failed   = counts.get(("NEW","FAILED"), 0)
     res_not_fail = counts.get(("RESOLVED","NOT_FAILED"), 0)
-    total = new_failed + res_not_fail
+    # total = new_failed + res_not_fail
 
     html = []
     html.append(f'<div {wrap}>')
@@ -305,25 +305,25 @@ def summary_to_html_minimal(counts) -> str:
     html.append(f'<th style="{hd_cell}">Workflow \\ Compliance</th>')
     html.append(f'<th style="{th_cell}">NON-COMPLIANT</th>')
     html.append(f'<th style="{th_cell}">REMEDIATED</th>')
-    html.append(f'<th style="{th_cell}">TOTAL</th>')
+    # html.append(f'<th style="{th_cell}">TOTAL</th>')
     html.append('</tr>')
     html.append('<tr>')
     html.append(f'<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:left;font-weight:600">NEW</td>')
     html.append(f'<td style="{base_cell}">{new_failed}</td>')
     html.append(f'<td style="{base_cell}">0</td>')
-    html.append(f'<td style="{base_cell}"><b>{new_failed}</b></td>')
+    # html.append(f'<td style="{base_cell}"><b>{new_failed}</b></td>')
     html.append('</tr>')
     html.append('<tr>')
     html.append(f'<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:left;font-weight:600">RESOLVED</td>')
     html.append(f'<td style="{base_cell}">0</td>')
-    html.append(f'<td style="{base_cell}">{res_not_fail}</td>')
+    # html.append(f'<td style="{base_cell}">{res_not_fail}</td>')
     html.append(f'<td style="{base_cell}"><b>{res_not_fail}</b></td>')
     html.append('</tr>')
     html.append('<tr>')
     html.append('<td style="padding:6px 10px;background:#f8fafc;border-top:1px solid #e5e7eb;text-align:left;font-weight:700">TOTAL</td>')
     html.append(f'<td style="padding:6px 10px;background:#f8fafc;border-top:1px solid #e5e7eb;text-align:center;font-weight:700">{new_failed}</td>')
     html.append(f'<td style="padding:6px 10px;background:#f8fafc;border-top:1px solid #e5e7eb;text-align:center;font-weight:700">{res_not_fail}</td>')
-    html.append(f'<td style="padding:6px 10px;background:#f8fafc;border-top:1px solid #e5e7eb;text-align:center;font-weight:800">{total}</td>')
+    #html.append(f'<td style="padding:6px 10px;background:#f8fafc;border-top:1px solid #e5e7eb;text-align:center;font-weight:800">{total}</td>')
     html.append('</tr>')
     html.append('</table></div>')
     return "".join(html)
