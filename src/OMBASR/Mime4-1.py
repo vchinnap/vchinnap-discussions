@@ -73,12 +73,12 @@ def make_note_filters(days_back: int, require_updated_by: bool = True):
     """
     Filter for note recency and (optionally) presence of UpdatedBy.
     """
-    note_by_contains = os.getenv("NOTE_UPDATED_BY_CONTAINS", "@") if require_updated_by else None
+    note_by_contains = os.getenv("NOTE_UPDATED_BY_CONTAINS", "BMOASR-Automation") if require_updated_by else None
     f = {
         "NoteUpdatedAt": [{"DateRange": {"Value": days_back, "Unit": "DAYS"}}]
     }
     if note_by_contains:
-        f["NoteUpdatedBy"] = [{"Value": note_by_contains, "Comparison": "CONTAINS"}]
+        f["NoteUpdatedBy"] = [{"Value": note_by_contains, "Comparison": "EQUALS"}]
     return f
 
 def merge_filters(base_filters, extra_filters):
@@ -303,8 +303,8 @@ def summary_to_html_minimal(counts) -> str:
     html.append('<table style="border-collapse:collapse;width:100%">')
     html.append('<tr>')
     html.append(f'<th style="{hd_cell}">Workflow \\ Compliance</th>')
-    html.append(f'<th style="{th_cell}">FAILED</th>')
-    html.append(f'<th style="{th_cell}">NOT_FAILED</th>')
+    html.append(f'<th style="{th_cell}">NON-COMPLIANT</th>')
+    html.append(f'<th style="{th_cell}">REMEDIATED</th>')
     html.append(f'<th style="{th_cell}">TOTAL</th>')
     html.append('</tr>')
     html.append('<tr>')
@@ -380,6 +380,8 @@ def to_csv_bytes(findings):
             display_columns.append(col.split(".",1)[1])  # keep exact tag header
         elif col.startswith("Resource."):
             display_columns.append(col.split(".",1)[1])
+        elif col == "Severity.Label"
+            display_columns.append("SeverityLabel")
         else:
             display_columns.append(col)
 
