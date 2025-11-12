@@ -6,33 +6,62 @@
     Handler: handler
     InputPayload:
       ResourceId: "{{ ParseFindings.ResourceId }}"
-      MinAvailableHours: 24
+      MinAvailableHours: 24   # change if you need a different window
     Script: |
       def handler(event, context):
           import boto3
           from datetime import datetime, timezone
           from botocore.exceptions import ClientError
+
           vol_id = event.get("ResourceId")
-          min_hours = int(event.get("MinAvailableHours", 24))
+          try:
+              min_hours = int(event.get("MinAvailableHours", 24))
+          except Exception:
+              min_hours = 24
+
           if not vol_id:
               return {"State":"error","Ready":"false","Reason":"Missing ResourceId"}
+
           ec2 = boto3.client("ec2")
           now = datetime.now(timezone.utc)
+
+          # Fetch volume or return not-found
           try:
-              v = ec2.describe_volumes(VolumeIds=[vol_id])["Volumes"][0]
+              resp = ec2.describe_volumes(VolumeIds=[vol_id])
+              vols = resp.get("Volumes", [])
+              if not vols:
+                  return {"State":"not-found","Ready":"false","Reason":"Volume not found"}
+              v = vols[0]
           except ClientError as e:
               return {"State":"error","Ready":"false","Error":str(e)}
+
+          # Must be unattached and available
           state = v.get("State","unknown")
           attachments = v.get("Attachments") or []
           if state != "available" or attachments:
-              return {"State":state,"Ready":"false","Reason":"Not available or still attached"}
-          create_time = v.get("CreateTime")
-          hours = int((now - create_time).total_seconds()//3600) if create_time else 0
+              return {
+                  "State": state,
+                  "Ready": "false",
+                  "Reason": "Not available or still attached"
+              }
+
+          # Use CreateTime as the available-since proxy (no tags, no CloudTrail)
+          create_time = v.get("CreateTime")  # datetime (UTC) or None
+          if not create_time:
+              return {
+                  "State": state,
+                  "Ready": "false",
+                  "Reason": "Missing CreateTime"
+              }
+
+          hours = int((now - create_time).total_seconds() // 3600)
           ready = hours >= min_hours
+
           return {
               "State": state,
               "Ready": "true" if ready else "false",
-              "AvailableSince": create_time.isoformat() if create_time else None,
+              "AvailableSince": create_time.isoformat(),
+              "CheckedAt": now.isoformat(),
               "AvailableHours": hours,
               "MinRequiredHours": min_hours,
               "Reason": "Meets threshold" if ready else "Below threshold"
