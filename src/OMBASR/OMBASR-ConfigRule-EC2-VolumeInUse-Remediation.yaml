@@ -1,0 +1,42 @@
+- name: DescribeResource
+  action: aws:executeScript
+  nextStep: CheckReadiness
+  inputs:
+    Runtime: python3.11
+    Handler: handler
+    InputPayload:
+      ResourceId: "{{ ParseFindings.ResourceId }}"
+      MinAvailableHours: 24
+    Script: |
+      def handler(event, context):
+          import boto3
+          from datetime import datetime, timezone
+          from botocore.exceptions import ClientError
+          vol_id = event.get("ResourceId")
+          min_hours = int(event.get("MinAvailableHours", 24))
+          if not vol_id:
+              return {"State":"error","Ready":"false","Reason":"Missing ResourceId"}
+          ec2 = boto3.client("ec2")
+          now = datetime.now(timezone.utc)
+          try:
+              v = ec2.describe_volumes(VolumeIds=[vol_id])["Volumes"][0]
+          except ClientError as e:
+              return {"State":"error","Ready":"false","Error":str(e)}
+          state = v.get("State","unknown")
+          attachments = v.get("Attachments") or []
+          if state != "available" or attachments:
+              return {"State":state,"Ready":"false","Reason":"Not available or still attached"}
+          create_time = v.get("CreateTime")
+          hours = int((now - create_time).total_seconds()//3600) if create_time else 0
+          ready = hours >= min_hours
+          return {
+              "State": state,
+              "Ready": "true" if ready else "false",
+              "AvailableSince": create_time.isoformat() if create_time else None,
+              "AvailableHours": hours,
+              "MinRequiredHours": min_hours,
+              "Reason": "Meets threshold" if ready else "Below threshold"
+          }
+  outputs:
+    - { Name: Ready, Selector: $.Payload.Ready, Type: String }
+    - { Name: State, Selector: $.Payload.State, Type: String }
