@@ -2,7 +2,7 @@ import boto3, os
 from datetime import datetime, timezone
 
 config = boto3.client("config")
-ec2    = boto3.client("ec2")
+ec2 = boto3.client("ec2")
 
 # --------- Required tags ----------
 CFG_TAG_KEY  = "ConfigRule"
@@ -17,7 +17,7 @@ ALLOWED_L2_TEAMS = {
     "Compute-L2",
     "Storage-L2",
     "Network-L2",
-    "AppOps-L2",
+    "AppOps-L2"
 }
 
 # L2 tag key (hard-coded)
@@ -31,24 +31,16 @@ def _tag_val(tags, key):
     return None
 
 
-def _iter_instances_persist_and_l2():
+def _iter_instances_filtered():
     """
-    Yield only instances that:
-      1) Have ResourcePersistency = 'persistent'
-      2) Have Support-Team-L2 tag in the ALLOWED_L2_TEAMS set
+    Yield only instances where:
+      - Support-Team-L2 tag is in ALLOWED_L2_TEAMS
+      - ResourcePersistency == 'persistent'
     """
     token = None
 
     while True:
-        # First-level filter: only instances with the persistency tag/value
-        params = {
-            "Filters": [
-                {
-                    "Name": f"tag:{PERSIST_TAG_KEY}",
-                    "Values": [PERSIST_TAG_VAL],
-                }
-            ]
-        }
+        params = {}
         if token:
             params["NextToken"] = token
 
@@ -58,18 +50,18 @@ def _iter_instances_persist_and_l2():
             for inst in r.get("Instances", []):
                 tags = inst.get("Tags", [])
 
-                # We already filtered by PERSIST_TAG_KEY=PERSIST_TAG_VAL above,
-                # but we still read it in case we want it for annotation later.
+                l2_val      = _tag_val(tags, L2_TAG_KEY)
                 persist_val = _tag_val(tags, PERSIST_TAG_KEY)
+
+                # Skip if L2 team not allowed
+                if l2_val not in ALLOWED_L2_TEAMS:
+                    continue
+
+                # Skip if ResourcePersistency is not 'persistent'
                 if persist_val != PERSIST_TAG_VAL:
-                    # Safety net: if somehow not matching, skip.
                     continue
 
-                l2_val = _tag_val(tags, L2_TAG_KEY)
-                # Second-level filter: L2 support team must be allowed
-                if not l2_val or l2_val not in ALLOWED_L2_TEAMS:
-                    continue
-
+                # Passed filters → this instance will be evaluated
                 yield inst
 
         token = resp.get("NextToken")
@@ -87,28 +79,19 @@ def lambda_handler(event, context):
     now = datetime.now(timezone.utc)
     evals = []
 
-    # Scope already reduced: only persistent + allowed L2 instances
-    for inst in _iter_instances_persist_and_l2():
+    # Only filtered instances (L2 + persistent) are evaluated
+    for inst in _iter_instances_filtered():
         iid  = inst["InstanceId"]
         tags = inst.get("Tags", [])
 
         cfg_val = _tag_val(tags, CFG_TAG_KEY)
 
-        # ------------------- Compliance Logic -------------------
-        # At this stage:
-        #   - ResourcePersistency = 'persistent' (by filter)
-        #   - Support-Team-L2 in ALLOWED_L2_TEAMS (by filter)
-        #
-        # We now ONLY check ConfigRule=True.
+        # --------- Compliance: ONLY ConfigRule matters ----------
         if cfg_val == CFG_TAG_VAL:
             comp = "COMPLIANT"
-            anno = (
-                f"Required tag '{CFG_TAG_KEY}'='{CFG_TAG_VAL}' "
-                f"present for persistent instance with allowed L2 support team."
-            )
+            anno = f"Required tag '{CFG_TAG_KEY}'='{CFG_TAG_VAL}' is present."
         else:
             comp = "NON_COMPLIANT"
-            # Annotation rule: mention only ConfigRule requirement
             anno = (
                 f"Required tag '{CFG_TAG_KEY}'='{CFG_TAG_VAL}' "
                 f"is missing or incorrect."
@@ -119,15 +102,12 @@ def lambda_handler(event, context):
             "ComplianceResourceId": iid,
             "ComplianceType": comp,
             "Annotation": anno[:256],
-            "OrderingTimestamp": inst.get("LaunchTime", now),
+            "OrderingTimestamp": inst.get("LaunchTime", now)
         })
 
     # ------------------- Send to AWS Config -------------------
     if result_token != "TESTMODE" and evals:
         for batch in _chunks(evals, 100):
-            config.put_evaluations(
-                Evaluations=batch,
-                ResultToken=result_token
-            )
+            config.put_evaluations(Evaluations=batch, ResultToken=result_token)
 
     return {"status": "ok", "evaluated": len(evals)}
