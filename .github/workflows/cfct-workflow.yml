@@ -1,0 +1,105 @@
+name: Deploy CloudFormation (Ordered Regions)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  STACK_NAME: my-stack
+  TEMPLATE_PATH: cfn/template.yaml
+  PARAMETERS_PATH: cfn/params.json
+
+# ----------------------------
+# 1️⃣ Deploy to Canada first
+# ----------------------------
+jobs:
+  deploy_ca_central_1:
+    name: Deploy ca-central-1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubActionsCfnDeployRole
+          aws-region: ca-central-1
+
+      - name: Validate CloudFormation template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://$TEMPLATE_PATH
+
+      - name: Deploy stack (ca-central-1)
+        run: |
+          set -euo pipefail
+
+          PARAMS=""
+          if [ -f "$PARAMETERS_PATH" ]; then
+            PARAMS="--parameter-overrides $(jq -r '.[] | "\(.ParameterKey)=\(.ParameterValue)"' "$PARAMETERS_PATH" | xargs)"
+          fi
+
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file "$TEMPLATE_PATH" \
+            $PARAMS \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-fail-on-empty-changeset
+
+      - name: Show outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs" \
+            --output table
+
+# ----------------------------
+# 2️⃣ Deploy to US (gated)
+# ----------------------------
+  deploy_us_east_1:
+    name: Deploy us-east-1
+    runs-on: ubuntu-latest
+    needs: deploy_ca_central_1   # 🔒 gate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubActionsCfnDeployRole
+          aws-region: us-east-1
+
+      - name: Validate CloudFormation template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://$TEMPLATE_PATH
+
+      - name: Deploy stack (us-east-1)
+        run: |
+          set -euo pipefail
+
+          PARAMS=""
+          if [ -f "$PARAMETERS_PATH" ]; then
+            PARAMS="--parameter-overrides $(jq -r '.[] | "\(.ParameterKey)=\(.ParameterValue)"' "$PARAMETERS_PATH" | xargs)"
+          fi
+
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file "$TEMPLATE_PATH" \
+            $PARAMS \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-fail-on-empty-changeset
+
+      - name: Show outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs" \
+            --output table
