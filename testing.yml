@@ -1,0 +1,64 @@
+description: Test cross-account assume role and list OPS CloudWatch alarms
+
+schemaVersion: '0.3'
+
+assumeRole: "{{ AutomationAssumeRole }}"
+
+parameters:
+  AutomationAssumeRole:
+    type: String
+    description: (Required) The ARN of the SBX SSM execution role
+  OpsRoleArn:
+    type: String
+    description: The OPS role to assume
+    default: arn:aws:iam::305747435344:role/BMOASR-RoleEvaluate-HCOPS-EC2-CWAlarms
+  Region:
+    type: String
+    default: ca-central-1
+
+mainSteps:
+  - name: AssumeOpsRoleAndListAlarms
+    action: aws:executeScript
+    timeoutSeconds: 60
+    inputs:
+      Runtime: python3.8
+      Handler: script_handler
+      Script: |
+        import boto3
+
+        def script_handler(events, context):
+            sts = boto3.client('sts')
+
+            assumed = sts.assume_role(
+                RoleArn=events['OpsRoleArn'],
+                RoleSessionName="CrossAccountTest"
+            )
+
+            creds = assumed['Credentials']
+
+            cw = boto3.client(
+                'cloudwatch',
+                region_name=events['Region'],
+                aws_access_key_id=creds['AccessKeyId'],
+                aws_secret_access_key=creds['SecretAccessKey'],
+                aws_session_token=creds['SessionToken']
+            )
+
+            alarms = cw.describe_alarms(MaxRecords=10)
+
+            return {
+                "AlarmCount": len(alarms.get("MetricAlarms", [])),
+                "Alarms": alarms.get("MetricAlarms", [])
+            }
+
+      InputPayload:
+        OpsRoleArn: "{{ OpsRoleArn }}"
+        Region: "{{ Region }}"
+
+    outputs:
+      - Name: AlarmCount
+        Selector: $.Payload.AlarmCount
+        Type: Integer
+      - Name: Alarms
+        Selector: $.Payload.Alarms
+        Type: MapList
