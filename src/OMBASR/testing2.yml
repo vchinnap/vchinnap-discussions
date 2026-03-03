@@ -1,0 +1,124 @@
+schemaVersion: '0.3'
+description: Run EC2 CPUUtilization alarm check (same logic as Lambda) via SSM Automation
+assumeRole: '{{ AutomationAssumeRole }}'
+
+parameters:
+  AutomationAssumeRole:
+    type: String
+    description: IAM role ARN for SSM Automation to assume (your remediation role)
+
+mainSteps:
+  - name: RunPythonCode
+    action: aws:executeScript
+    inputs:
+      Runtime: python3.11
+      Handler: handler
+      Script: |
+        import os
+        import boto3
+        from datetime import datetime, timezone
+        from botocore.config import Config
+
+        retry_config = Config(
+            retries={
+                "max_attempts": 10,
+                "mode": "standard"
+            }
+        )
+
+        config = boto3.client("config", config=retry_config)
+        ec2 = boto3.client("ec2", config=retry_config)
+        cloudwatch = boto3.client("cloudwatch", config=retry_config)
+
+        def handler(event, context):
+
+            result_token = event.get("resultToken", "TESTMODE")
+            evaluations = []
+
+            print("Starting EC2 CPUUtilization alarm check...")
+
+            response = ec2.describe_instances(
+                Filters=[
+                    {"Name": "tag:ConfigRule", "Values": ["True"]}
+                ]
+            )
+
+            for reservation in response.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+
+                    instance_id = instance["InstanceId"]
+                    timestamp = instance.get("LaunchTime", datetime.now(timezone.utc))
+
+                    print("------------------------------------------------")
+                    print(f"Checking instance: {instance_id}")
+
+                    compliance_type = "NON_COMPLIANT"
+                    annotation = "Missing CPUUtilization alarm"
+
+                    try:
+
+                        alarm_resp = cloudwatch.describe_alarms_for_metric(
+                            Namespace="AWS/EC2",
+                            MetricName="CPUUtilization",
+                            Dimensions=[
+                                {
+                                    "Name": "InstanceId",
+                                    "Value": instance_id
+                                }
+                            ]
+                        )
+
+                        alarms = alarm_resp.get("MetricAlarms", [])
+
+                        print(f"Alarms returned for {instance_id}: {len(alarms)}")
+
+                        for alarm in alarms:
+                            print("Alarm Name:", alarm.get("AlarmName"))
+                            print("Alarm State:", alarm.get("StateValue"))
+                            print("Threshold:", alarm.get("Threshold"))
+
+                        if alarms:
+
+                            alarm_names = [a.get("AlarmName") for a in alarms]
+
+                            print(f"ALARM FOUND for {instance_id}: {alarm_names}")
+
+                            compliance_type = "COMPLIANT"
+                            annotation = f"CPUUtilization alarm present ({','.join(alarm_names)})"
+
+                        else:
+                            print(f"No CPUUtilization alarms found for {instance_id}")
+
+                    except Exception as e:
+
+                        print(f"Error checking alarms for {instance_id}: {str(e)}")
+
+                        compliance_type = "NON_COMPLIANT"
+                        annotation = f"Error checking alarm: {str(e)[:200]}"
+
+                    evaluations.append(
+                        {
+                            "ComplianceResourceType": "AWS::EC2::Instance",
+                            "ComplianceResourceId": instance_id,
+                            "ComplianceType": compliance_type,
+                            "Annotation": annotation[:256],
+                            "OrderingTimestamp": str(timestamp),
+                        }
+                    )
+
+            print("------------------------------------------------")
+            print("Evaluated instances:", len(evaluations))
+
+            if result_token != "TESTMODE" and evaluations:
+
+                for i in range(0, len(evaluations), 100):
+
+                    config.put_evaluations(
+                        Evaluations=evaluations[i:i+100],
+                        ResultToken=result_token
+                    )
+
+            return {
+                "status": "completed",
+                "evaluated_instances": len(evaluations)
+            }
