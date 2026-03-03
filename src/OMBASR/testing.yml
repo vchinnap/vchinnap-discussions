@@ -1,0 +1,104 @@
+schemaVersion: '0.3'
+description: Run Python to find EC2 instances tagged ConfigRule=True and check for CPUUtilization alarms (same logic as Lambda)
+assumeRole: '{{ AutomationAssumeRole }}'
+
+parameters:
+  AutomationAssumeRole:
+    type: String
+    description: IAM role ARN for SSM Automation to assume (your remediation role)
+  Region:
+    type: String
+    default: '{{global:REGION}}'
+    description: Region to run the checks in
+
+mainSteps:
+  - name: RunPythonCheck
+    action: aws:executeScript
+    inputs:
+      Runtime: python3.11
+      Handler: handler
+      InputPayload:
+        Region: '{{ Region }}'
+      Script: |
+        import boto3
+        from datetime import datetime, timezone
+
+        def handler(event, context):
+            region = event.get("Region")
+            ec2 = boto3.client("ec2", region_name=region)
+            cloudwatch = boto3.client("cloudwatch", region_name=region)
+
+            evaluations = []
+
+            # Get all EC2s with ConfigRule=True tag
+            response = ec2.describe_instances(
+                Filters=[{"Name": "tag:ConfigRule", "Values": ["True"]}]
+            )
+
+            for reservation in response.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+                    instance_id = instance["InstanceId"]
+                    timestamp = instance.get("LaunchTime", datetime.now(timezone.utc))
+
+                    compliance_type = "NON_COMPLIANT"
+                    annotation = "Missing CPUUtilization alarm"
+
+                    # Handle pagination
+                    paginator = cloudwatch.get_paginator("describe_alarms")
+
+                    for page in paginator.paginate(AlarmTypes=["MetricAlarm"]):
+                        for alarm in page.get("MetricAlarms", []):
+
+                            # Check namespace
+                            if alarm.get("Namespace") != "AWS/EC2":
+                                continue
+
+                            # Check metric name
+                            if alarm.get("MetricName") != "CPUUtilization":
+                                continue
+
+                            # Check dimensions
+                            for d in alarm.get("Dimensions", []):
+                                if d.get("Name") == "InstanceId" and d.get("Value") == instance_id:
+                                    compliance_type = "COMPLIANT"
+                                    annotation = "CPUUtilization alarm is present"
+                                    break
+
+                            if compliance_type == "COMPLIANT":
+                                break
+
+                        if compliance_type == "COMPLIANT":
+                            break
+
+                    evaluations.append(
+                        {
+                            "InstanceId": instance_id,
+                            "ComplianceType": compliance_type,
+                            "Annotation": annotation,
+                            "OrderingTimestamp": str(timestamp),
+                        }
+                    )
+
+            compliant = [e["InstanceId"] for e in evaluations if e["ComplianceType"] == "COMPLIANT"]
+            non_compliant = [e["InstanceId"] for e in evaluations if e["ComplianceType"] == "NON_COMPLIANT"]
+
+            # Print summary (shows in Automation execution output/logs)
+            print("Region:", region)
+            print("COMPLIANT count:", len(compliant))
+            print("NON_COMPLIANT count:", len(non_compliant))
+            print("COMPLIANT instances:", compliant)
+            print("NON_COMPLIANT instances:", non_compliant)
+
+            return {
+                "Region": region,
+                "EvaluatedCount": len(evaluations),
+                "CompliantCount": len(compliant),
+                "NonCompliantCount": len(non_compliant),
+                "CompliantInstances": compliant,
+                "NonCompliantInstances": non_compliant,
+                "Details": evaluations
+            }
+    outputs:
+      - Name: Result
+        Selector: $.Payload
+        Type: StringMap
