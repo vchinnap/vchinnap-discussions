@@ -17,23 +17,31 @@ mainSteps:
         import os
         import boto3
         from datetime import datetime, timezone
+        from botocore.config import Config
 
-        config = boto3.client("config")
-        ec2 = boto3.client("ec2")
+        # Retry config to prevent throttling
+        retry_config = Config(
+            retries={
+                "max_attempts": 10,
+                "mode": "standard"
+            }
+        )
+
+        config = boto3.client("config", config=retry_config)
+        ec2 = boto3.client("ec2", config=retry_config)
+        cloudwatch = boto3.client("cloudwatch", config=retry_config)
 
         def handler(event, context):
+
             result_token = event.get("resultToken", "TESTMODE")
             evaluations = []
 
+            print("Starting EC2 CPUUtilization alarm check...")
+
             # Get all EC2s with ConfigRule=True tag
             response = ec2.describe_instances(
-                Filters=[
-                    {"Name": "tag:ConfigRule", "Values": ["True"]}
-                ]
+                Filters=[{"Name": "tag:ConfigRule", "Values": ["True"]}]
             )
-
-            # CloudWatch client (same region as execution)
-            cloudwatch = boto3.client("cloudwatch")
 
             for reservation in response.get("Reservations", []):
                 for instance in reservation.get("Instances", []):
@@ -41,38 +49,42 @@ mainSteps:
                     instance_id = instance["InstanceId"]
                     timestamp = instance.get("LaunchTime", datetime.now(timezone.utc))
 
+                    print(f"Checking instance: {instance_id}")
+
                     compliance_type = "NON_COMPLIANT"
                     annotation = "Missing CPUUtilization alarm"
 
                     try:
-                        # Handle pagination
-                        paginator = cloudwatch.get_paginator("describe_alarms")
 
-                        for page in paginator.paginate(AlarmTypes=["MetricAlarm"]):
-                            for alarm in page.get("MetricAlarms", []):
+                        alarms = cloudwatch.describe_alarms(
+                            AlarmTypes=["MetricAlarm"]
+                        ).get("MetricAlarms", [])
 
-                                # Check namespace
-                                if alarm.get("Namespace") != "AWS/EC2":
-                                    continue
+                        for alarm in alarms:
 
-                                # Check metric name
-                                if alarm.get("MetricName") != "CPUUtilization":
-                                    continue
+                            if alarm.get("Namespace") != "AWS/EC2":
+                                continue
 
-                                # Check dimensions
-                                for d in alarm.get("Dimensions", []):
-                                    if d.get("Name") == "InstanceId" and d.get("Value") == instance_id:
-                                        compliance_type = "COMPLIANT"
-                                        annotation = "CPUUtilization alarm is present"
-                                        break
+                            if alarm.get("MetricName") != "CPUUtilization":
+                                continue
 
-                                if compliance_type == "COMPLIANT":
-                                    break
+                            dimensions = {d["Name"]: d["Value"] for d in alarm.get("Dimensions", [])}
 
-                            if compliance_type == "COMPLIANT":
+                            if dimensions.get("InstanceId") == instance_id:
+
+                                alarm_name = alarm.get("AlarmName")
+
+                                print(f"ALARM FOUND -> Instance: {instance_id} Alarm: {alarm_name}")
+
+                                compliance_type = "COMPLIANT"
+                                annotation = f"CPUUtilization alarm is present ({alarm_name})"
+
                                 break
 
                     except Exception as e:
+
+                        print(f"Error checking alarms for {instance_id}: {str(e)}")
+
                         compliance_type = "NON_COMPLIANT"
                         annotation = f"Error checking alarm: {str(e)[:200]}"
 
@@ -86,15 +98,17 @@ mainSteps:
                         }
                     )
 
+            print("Evaluated instances:", len(evaluations))
+
             # Submit to AWS Config (if resultToken passed)
             if result_token != "TESTMODE" and evaluations:
+
                 for i in range(0, len(evaluations), 100):
+
                     config.put_evaluations(
                         Evaluations=evaluations[i:i+100],
                         ResultToken=result_token
                     )
-
-            print("Evaluated instances:", len(evaluations))
 
             return {
                 "status": "completed",
